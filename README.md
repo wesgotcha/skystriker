@@ -96,11 +96,14 @@ skystriker/
 │   │   ├── Hangar.cpp      机库选机 + 简报 + 结算
 │   │   └── Game.cpp        战斗屏 + 暂停 + 阵亡 + 屏幕工厂
 │   └── game/
-│       ├── World.hpp/.cpp  战斗世界：玩家 / 敌机 / 弹幕 / Boss / 波次 / HUD
+│       ├── Pose.hpp        战机姿态规范（滚转/俯仰，机库复用同一套）
+│       └── World.hpp/.cpp  战斗世界：玩家 / 敌机 / 弹幕 / Boss / 波次 / HUD
+├── spec/ui-design.md       UI 架构设计稿
 ├── tools/                  开发期用的模型探针、字符集校验
 ├── shots/                  各界面截图
 ├── build.bat / run.bat
-└── CMakeLists.txt
+├── CMakeLists.txt
+└── .gitignore / .gitattributes
 ```
 
 ---
