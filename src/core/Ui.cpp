@@ -160,7 +160,9 @@ void StatBar(float x, float y, float w, float h, float ratio, Color fill, Color 
 void Dim(float alpha, Color tint) { DrawRectangle(0, 0, (int)VW, (int)VH, WithAlpha(tint, alpha)); }
 
 bool Hover(Rectangle r) {
-    Vector2 m = app().in.mouse;
+    const Input& in = app().in;
+    if (!in.mouseActive && !in.lmbPressed) return false;
+    Vector2 m = in.mouse;
     return m.x >= r.x && m.x <= r.x + r.width && m.y >= r.y && m.y <= r.y + r.height;
 }
 

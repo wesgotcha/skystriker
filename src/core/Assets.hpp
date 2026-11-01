@@ -23,7 +23,9 @@ struct Craft {
     float       len = 1.0f;    // 机身长度（世界单位，沿 +Z）
     float       span = 1.0f;   // 翼展（世界单位，沿 X）
     Texture2D   skin[SKIN_COUNT]{};
+    bool        skinLoaded[SKIN_COUNT]{};
     bool        loaded = false;
+    int         jobIndex = -1;   // 对应的加载作业号
 };
 
 // 场景贴图
@@ -42,10 +44,20 @@ extern Craft              boss;
 void init();
 void shutdown();
 
-// 机体分帧加载（BOOT 屏用）
+// 机体分帧加载
 int  modelJobCount();
 bool modelJobLoaded(int i);
 void loadModelJob(int i);
+
+// 作业编号：0..5 玩家、6..9 敌机、10 Boss
+inline int playerJob(int craft) { return craft; }
+inline int enemyJob(int type) { return 6 + type; }
+inline int bossJob() { return 10; }
+
+// 缺什么补什么：已加载直接返回，否则同步加载（约 150ms）
+bool ensureLoaded(int job);
+// 换色贴图按需解码（约 75ms），已加载则立即返回
+void ensureSkin(Craft& c, int skin);
 
 // 字体：按需求字号取最接近且不小于它的图集
 Font& body(int size);

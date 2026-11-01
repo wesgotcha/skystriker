@@ -72,6 +72,9 @@ bool App::init(int argc, char** argv) {
             else if (s == "game") startAt = Sid::Game;
         } else if (a == "--demo") demoMode = true;
         else if (a == "--god") godMode = true;
+        else if (a == "--fps") fpsLog = true;
+        else if (a == "--debug-title") debugTitle = true;
+        else if (a == "--state-log") stateLog = true;
         else if (const char* v = val("--test-esc=")) testEscAt = (float)atof(v);
         else if (const char* v = val("--force-fail=")) forceFailAt = (float)atof(v);
         else if (const char* v = val("--test-key=")) {
@@ -222,6 +225,8 @@ void App::updateInput() {
     in.rmbPressed = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
     in.wheel = GetMouseWheelMove();
     in.anyKey = GetKeyPressed() != 0;
+    if (in.mouseMoved) in.mouseActive = true;
+    if (in.anyKey) in.mouseActive = false;   // 一动键盘就回到键盘焦点
     in.time = GetTime();
 
     if (IsKeyPressed(KEY_F11) || (IsKeyDown(KEY_LEFT_ALT) && IsKeyPressed(KEY_ENTER))) toggleFullscreen();
@@ -363,6 +368,36 @@ void App::run() {
         if (dt > 0.1f) dt = 0.1f;
 
         stepSimulation(dt);
+
+        if (fpsLog) {
+            static double lastLog = 0;
+            static int slow = 0, frames = 0;
+            static float worst = 0;
+            frames++;
+            if (dt > 0.05f) { slow++; if (dt > worst) worst = dt; }
+            if (in.time - lastLog >= 1.0) {
+                printf("[fps] %2.0f frames=%2d slow=%d worst=%.0fms\n",
+                       (double)GetFPS(), frames, slow, worst * 1000.0f);
+                fflush(stdout);
+                lastLog = in.time; slow = 0; frames = 0; worst = 0;
+            }
+        }
+
+        if (stateLog) {
+            static double lastState = 0;
+            if (in.time - lastState >= 1.0) {
+                lastState = in.time;
+                printf("[state] %s\n", GameDebugInfo().c_str());
+                fflush(stdout);
+            }
+        }
+
+        if (debugTitle) {
+            const char* scr = cur_ ? cur_->debugName() : "-";
+            const char* ov = overlay() ? overlay()->debugName() : "";
+            SetWindowTitle(TextFormat("SKY STRIKER | %s%s%s%s", scr, ov[0] ? "+" : "", ov,
+                                     trans.active ? " (trans)" : ""));
+        }
 
         beginCanvas();
         begin2D();

@@ -245,6 +245,7 @@ void loadModelJob(int i) {
     else if (j.index == 99) c = &boss;
     else c = &enemies[j.index];
 
+    c->jobIndex = i;
     c->model = LoadModel(j.gltf);
     if (c->model.meshCount == 0) {
         TraceLog(LOG_ERROR, "MODEL: failed %s", j.gltf);
@@ -263,7 +264,10 @@ void loadModelJob(int i) {
         if (oldId > 0) oldTex.push_back(oldId);
         mat.shader = unlit;
     }
-    for (int k = 0; k < SKIN_COUNT; k++) c->skin[k] = LoadSkin(j.skinPath[k], j.skinSize);
+    // 只预载默认配色：单张 2048 贴图解码约 75ms，5 张就是 375ms，
+    // 11 架机体全量预载会把启动屏拖到 5 秒以上。其余配色在真正用到时再解。
+    c->skin[SKIN_BLUE] = LoadSkin(j.skinPath[SKIN_BLUE], j.skinSize);
+    c->skinLoaded[SKIN_BLUE] = (c->skin[SKIN_BLUE].id != 0);
     for (int m = 0; m < c->model.materialCount; m++) {
         c->model.materials[m].maps[MATERIAL_MAP_DIFFUSE].texture = c->skin[SKIN_BLUE];
     }
@@ -273,6 +277,20 @@ void loadModelJob(int i) {
         UnloadTexture(t);
     }
     c->loaded = true;
+}
+
+void ensureSkin(Craft& c, int skin) {
+    if (skin < 0 || skin >= SKIN_COUNT) return;
+    if (c.skinLoaded[skin] || c.skin[skin].id != 0) return;
+    if (c.jobIndex < 0 || c.jobIndex >= (int)jobs.size()) return;
+    c.skin[skin] = LoadSkin(jobs[c.jobIndex].skinPath[skin], jobs[c.jobIndex].skinSize);
+    c.skinLoaded[skin] = (c.skin[skin].id != 0);
+}
+
+bool ensureLoaded(int job) {
+    if (job < 0 || job >= (int)jobs.size()) return false;
+    if (!modelJobLoaded(job)) loadModelJob(job);
+    return modelJobLoaded(job);
 }
 
 // ---------------------------------------------------------------- 着色器
@@ -411,6 +429,7 @@ void drawCraft(const Craft& c, float sx, float sy, int skin, const pose::Pose& p
                         (c.bb.min.z + c.bb.max.z) * 0.5f};
 
     Craft& mc = const_cast<Craft&>(c);
+    ensureSkin(mc, skin);   // 首次用到某个配色时才解码
     if (mc.skin[skin].id) {
         for (int i = 0; i < mc.model.materialCount; i++)
             mc.model.materials[i].maps[MATERIAL_MAP_DIFFUSE].texture = mc.skin[skin];

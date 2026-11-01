@@ -17,6 +17,7 @@ public:
     void update(float dt) override;
     void drawWorld() override;
     void draw() override;
+    const char* debugName() const override { return "boot"; }
 
 private:
     float t_ = 0;
@@ -41,6 +42,7 @@ public:
     void update(float dt) override;
     void draw() override;
     bool freezeWorld() const override { return true; }
+    const char* debugName() const override { return "confirm"; }
 
 private:
     std::string title_, body_, yes_, no_;
@@ -57,6 +59,7 @@ public:
     void update(float dt) override;
     void draw() override;
     bool freezeWorld() const override { return true; }
+    const char* debugName() const override { return "settings"; }
 
 private:
     int  page_ = 0;
@@ -72,6 +75,7 @@ public:
     void update(float dt) override;
     void draw() override;
     bool freezeWorld() const override { return true; }
+    const char* debugName() const override { return "records"; }
 };
 
 // ---------------------------------------------------------------- TITLE
@@ -81,6 +85,7 @@ public:
     void update(float dt) override;
     void drawWorld() override;
     void draw() override;
+    const char* debugName() const override { return "title"; }
 
 private:
     Backdrop bg_;
@@ -102,6 +107,7 @@ public:
     void drawWorld() override;
     void draw3D() override;
     void draw() override;
+    const char* debugName() const override { return mode_ == Result ? "hangar-result" : "hangar"; }
 
     // 结算数据（由战斗结束时填充）
     struct ResultData {
@@ -137,6 +143,7 @@ public:
     void update(float dt) override;
     void draw() override;
     bool freezeWorld() const override { return false; }
+    const char* debugName() const override { return "briefing"; }
     bool updateBehind() const { return true; }
 
 private:
@@ -153,6 +160,7 @@ public:
     void draw3D() override;
     void draw() override;
     bool freezeWorld() const override { return true; }
+    const char* debugName() const override { return "game"; }
 
 private:
     float t_ = 0;
@@ -164,6 +172,7 @@ public:
     void update(float dt) override;
     void draw() override;
     bool freezeWorld() const override { return true; }
+    const char* debugName() const override { return "pause"; }
 
 private:
     int   focus_ = 0;
@@ -175,6 +184,7 @@ public:
     void update(float dt) override;
     void draw() override;
     bool freezeWorld() const override { return true; }
+    const char* debugName() const override { return "gameover"; }
 
 private:
     float t_ = 0;

@@ -23,12 +23,17 @@ public:
     virtual void draw() = 0;
     // 覆盖层弹出时，底下的世界是否冻结
     virtual bool freezeWorld() const { return false; }
+    // 调试用：当前屏幕名字，会拼进窗口标题，方便自动化测试判断状态
+    virtual const char* debugName() const { return "?"; }
 };
 
 struct Input {
     Vector2 mouse{0, 0};      // 逻辑坐标
     Vector2 mouseDelta{0, 0};
     bool    mouseMoved = false;
+    // 只有真正动过鼠标，悬停才算数：否则窗口一出现，光标恰好压在某个菜单项上，
+    // 焦点会被它抢走（键盘操作时尤其容易误触发）
+    bool    mouseActive = false;
     bool    lmb = false, lmbPressed = false, lmbReleased = false;
     bool    rmbPressed = false;
     float   wheel = 0.0f;
@@ -120,6 +125,9 @@ public:
     Sid         startAt = Sid::Boot;
     bool        demoMode = false;
     bool        godMode = false;
+    bool        fpsLog = false;   // 调试：每秒打印一次帧率
+    bool        debugTitle = false;  // 调试：把当前屏幕写进窗口标题
+    bool        stateLog = false;    // 调试：每秒打印一次战斗状态
     std::string overlayName;
     int         forceW = 0, forceH = 0;
     float       testEscAt = -1.0f;  // 调试：在第 N 秒注入一次 ESC
