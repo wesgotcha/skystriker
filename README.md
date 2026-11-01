@@ -231,6 +231,7 @@ SkyStriker.exe --screen=game --demo --god --shot=out.png --warp=95
 | `--result` | 机库以结算模式打开 |
 | `--warp=秒` | 先空跑若干秒再截图 |
 | `--shot=路径` | 把逻辑画布导出为 PNG 后退出 |
+| `--seq=目录 --seqn=N` | 逐帧抓真实呈现画面（N 帧后退出），用来验证 UI 是否稳定 |
 | `--size=1920x1080` | 指定窗口尺寸 |
 | `--test-esc=1.0` | 在第 N 秒注入一次 ESC，用来回归覆盖层的关闭流程 |
 | `--test-key=R@6` | 在第 6 秒注入一次 R 键（回归「阵亡后重试」等流程） |
