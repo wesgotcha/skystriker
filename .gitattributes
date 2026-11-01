@@ -1,0 +1,15 @@
+# 二进制资源：不要尝试按文本 diff / 合并
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ttf   binary
+*.dll   binary
+*.a     binary
+*.lib   binary
+*.exe   binary
+*.blend binary
+*.fbx   binary
+*.zip   binary
+
+# Windows 批处理必须保持 CRLF，否则 cmd 解析会出错
+*.bat   text eol=crlf
