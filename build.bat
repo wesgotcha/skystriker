@@ -21,13 +21,30 @@ if errorlevel 1 (
     echo [warn] some UI text is missing from the font subset - see report above
 )
 
+rem close a running instance, otherwise the linker cannot overwrite the exe
+taskkill /IM SkyStriker.exe /F >nul 2>&1
+if not errorlevel 1 (
+    echo [i] closed running SkyStriker.exe
+    ping -n 2 127.0.0.1 >nul
+)
+
 echo [2/2] compiling...
+rem exe may still be locked for a moment after taskkill - retry a few times
+set TRY=0
+:link
 %CXX% %CXXFLAGS% %INC% %SRC% %LIBDIR% %LIBS% -o build\SkyStriker.exe
-if errorlevel 1 (
+if not errorlevel 1 goto linked
+set /a TRY+=1
+if %TRY% GEQ 4 (
     echo.
     echo BUILD FAILED
     exit /b 1
 )
+echo [i] link retry %TRY% ...
+taskkill /IM SkyStriker.exe /F >nul 2>&1
+ping -n 2 127.0.0.1 >nul
+goto link
+:linked
 
 echo.
 echo BUILD OK: build\SkyStriker.exe

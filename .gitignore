@@ -10,6 +10,8 @@
 /vendor/smoke.exe
 /tools/*.exe
 /tools/probe_*.png
+/tools/*.exe
+/shots/live/
 
 # ---------------------------------------------------------------- Blender 自动备份
 *.blend1
