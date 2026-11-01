@@ -13,6 +13,8 @@ enum Sfx {
     SfxUiSelect,
     SfxDamage,
     SfxWarn,
+    SfxDash,
+    SfxCharge,
     SfxCount
 };
 

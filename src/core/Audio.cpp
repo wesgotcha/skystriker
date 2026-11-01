@@ -199,6 +199,39 @@ void init() {
         b.normalize(0.5f);
         g_sfx[SfxWarn] = Make(b);
     }
+    // 闪身：带通噪声快速扫过（气流声）
+    {
+        Buf b; b.alloc(0.26f);
+        float lp = 0, hp = 0;
+        for (size_t i = 0; i < b.s.size(); i++) {
+            float t = i / (float)b.rate;
+            float u = t / 0.26f;
+            float k = 0.5f - 0.42f * u;  // 截止频率下滑
+            lp += k * (Noise() - lp);
+            hp = lp - hp * 0.02f;
+            float env = std::min(1.0f, t * 40.0f) * std::exp(-t * 7.5f);
+            b.s[i] = hp * env;
+        }
+        b.normalize(0.62f);
+        g_sfx[SfxDash] = Make(b);
+    }
+    // 蓄力：上扬方波 + 抖颤，给玩家"要来了"的听觉提示
+    {
+        Buf b; b.alloc(1.05f);
+        float ph = 0;
+        for (size_t i = 0; i < b.s.size(); i++) {
+            float t = i / (float)b.rate;
+            float u = t / 1.05f;
+            float f = 220.0f + 620.0f * u * u;
+            ph += f / b.rate;
+            float sq = (ph - std::floor(ph)) < 0.5f ? 1.0f : -1.0f;
+            float trem = 0.72f + 0.28f * std::sin(t * 46.0f);
+            float env = std::min(1.0f, t * 14.0f) * (1.0f - 0.35f * u);
+            b.s[i] = sq * env * trem * 0.45f;
+        }
+        b.normalize(0.5f);
+        g_sfx[SfxCharge] = Make(b);
+    }
 
     g_ready = true;
     applyVolumes(80.0f, 45.0f, 85.0f);

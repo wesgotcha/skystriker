@@ -13,24 +13,43 @@ namespace sky {
 
 namespace {
 
+// ---------------------------------------------------------------- 敌机档案
 struct EnemyDef {
-    int   craft;
+    int   craft;  // assets::enemies 下标
     float hp;
     float span;
     int   score;
+    Color bar;
 };
 
-// 0 Imperial 1 Insurgent 2 Pancake 3 Spitfire
-const EnemyDef kEnemy[4] = {
-    {0, 36.0f, 300.0f, 300},
-    {1, 15.0f, 240.0f, 150},
-    {2, 30.0f, 330.0f, 260},
-    {3, 13.0f, 250.0f, 180},
+// C 侦察机（Spitfire）/ B 炮击机（Imperial）/ A 冲锋机（Insurgent）
+const EnemyDef kEnemy[3] = {
+    {3, 30.0f, 250.0f, 200, Color{126, 226, 255, 255}},
+    {0, 130.0f, 300.0f, 600, Color{255, 196, 92, 255}},
+    {1, 72.0f, 250.0f, 500, Color{255, 112, 96, 255}},
 };
+
+constexpr float kBossSpan = 620.0f;
+constexpr float kBossHp = 1200.0f;
+constexpr float kBossChargeTime = 1.15f;
 
 constexpr float kPlayerSpan = 330.0f;
 constexpr float kPlayerSpeed = 820.0f;
 constexpr float kPlayerR = 11.0f;
+constexpr float kPlayerMinX = 110.0f;
+constexpr float kPlayerMaxX = 1150.0f;  // 玩家活动区固定在左侧，敌机在右半场
+
+constexpr float kDashSpeed = 2050.0f;
+constexpr float kDashDur = 0.20f;
+constexpr float kDashCd = 0.80f;
+
+// 伤害：普通弹 / 大炮弹（1/4）/ 冲撞（1/3）
+constexpr float kDmgBullet = 9.0f;
+constexpr float kDmgShell = 25.0f;
+constexpr float kDmgRam = 34.0f;
+
+constexpr float kChargeTime = 1.05f;  // A 蓄力提示时长
+constexpr float kRamSpeed = 1500.0f;
 
 Color BulletColor(int kind) {
     switch (kind) {
@@ -41,6 +60,67 @@ Color BulletColor(int kind) {
     }
 }
 
+float EnemySpan(const Enemy& e) {
+    return (e.cls == EC_BOSS) ? kBossSpan : kEnemy[e.cls].span * e.scale;
+}
+
+Color EnemyBarColor(int cls) { return (cls == EC_BOSS) ? pal::kDanger : kEnemy[cls].bar; }
+
+// 分段血条
+void SegBar(float x, float y, float w, float h, float ratio, int seg, Color fill, Color bg) {
+    float gap = 2.0f;
+    float sw = (w - gap * (seg - 1)) / seg;
+    int lit = (int)std::round(clampf(ratio, 0, 1) * seg);
+    for (int i = 0; i < seg; i++) {
+        DrawRectangle((int)(x + i * (sw + gap)), (int)y, (int)std::ceil(sw), (int)h, (i < lit) ? fill : bg);
+    }
+}
+
+// 粗线：DrawLineEx 在三角带路径上会掉亮度，这里用两个三角形自己拼
+void ThickLine(Vector2 a, Vector2 b, float thick, Color c) {
+    Vector2 d{b.x - a.x, b.y - a.y};
+    float len = std::sqrt(d.x * d.x + d.y * d.y);
+    if (len < 0.0001f || thick <= 0.0f) return;
+    float nx = -d.y / len * thick * 0.5f, ny = d.x / len * thick * 0.5f;
+    Vector2 p0{a.x + nx, a.y + ny}, p1{a.x - nx, a.y - ny};
+    Vector2 p2{b.x - nx, b.y - ny}, p3{b.x + nx, b.y + ny};
+    DrawTriangle(p0, p1, p2, c);
+    DrawTriangle(p0, p2, p3, c);
+}
+
+// 冲锋瞄准线：从敌机沿锁定方向画到画面外，虚线 + 危险走廊
+void DrawAimLine(Vector2 a, Vector2 dir, Color c, float alpha) {
+    float len = 3000.0f;
+    if (dir.x < -0.0001f) len = std::min(len, (-140.0f - a.x) / dir.x);
+    if (dir.x > 0.0001f) len = std::min(len, (VW + 140.0f - a.x) / dir.x);
+    if (dir.y < -0.0001f) len = std::min(len, (-140.0f - a.y) / dir.y);
+    if (dir.y > 0.0001f) len = std::min(len, (VH + 140.0f - a.y) / dir.y);
+    if (len < 10.0f) return;
+
+    Vector2 b{a.x + dir.x * len, a.y + dir.y * len};
+    ThickLine(a, b, 132.0f, WithAlpha(c, 0.10f * alpha));
+    ThickLine(a, b, 56.0f, WithAlpha(c, 0.14f * alpha));
+    ThickLine(a, b, 5.0f, WithAlpha(c, 0.45f * alpha));
+
+    float off = (float)std::fmod((double)GetTime() * 320.0, 56.0);
+    for (float s = 40.0f + off; s < len; s += 56.0f) {
+        float e = std::min(s + 32.0f, len);
+        ThickLine({a.x + dir.x * s, a.y + dir.y * s}, {a.x + dir.x * e, a.y + dir.y * e}, 10.0f,
+                  WithAlpha(c, 0.95f * alpha));
+        ThickLine({a.x + dir.x * s, a.y + dir.y * s}, {a.x + dir.x * e, a.y + dir.y * e}, 4.0f,
+                  WithAlpha(Color{255, 240, 232, 255}, 0.85f * alpha));
+    }
+}
+
+// 警示三角 + 感叹号
+void DrawWarnMark(float cx, float cy, float size, float alpha) {
+    Color c = WithAlpha(pal::kDanger, alpha);
+    DrawTriangle({cx, cy - size}, {cx - size * 0.92f, cy + size * 0.72f}, {cx + size * 0.92f, cy + size * 0.72f}, c);
+    DrawTriangle({cx, cy - size * 0.62f}, {cx - size * 0.58f, cy + size * 0.44f}, {cx + size * 0.58f, cy + size * 0.44f},
+                 WithAlpha(Color{24, 6, 8, 255}, 0.75f * alpha));
+    ui::TextC("!", cx, cy - size * 0.62f, (int)(size * 0.92f), WithAlpha(WHITE, alpha), true);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- 初始化
@@ -49,6 +129,7 @@ void World::reset() {
     enemies_.clear();
     particles_.clear();
     pickups_.clear();
+    ghosts_.clear();
     boss_ = Enemy{};
     score_ = 0;
     kills_ = 0;
@@ -59,16 +140,18 @@ void World::reset() {
     flash_ = 0;
     elapsed_ = 0;
     wave_ = 0;
+    wavePhase_ = WP_Banner;
     waveT_ = 0;
-    waveSpawning_ = false;
-    spawnStep_ = 0;
-    spawnTimer_ = 0;
+    banner_ = "";
     bannerT_ = 0;
+    bannerDur_ = 1.6f;
     stormMix_ = 0;
     state_ = WorldState::Playing;
     stateT_ = 0;
-    finished_ = false;  // 重开必须复位，否则新一局一进来就被判定为已结束
+    finished_ = false;
     bossEnter_ = 0;
+    bossPending_ = false;
+    bossDelay_ = 0;
     bombFlash_ = 0;
     playerDeathT_ = 0;
     invuln_ = 1.5f;
@@ -78,8 +161,12 @@ void World::reset() {
     playerLastY_ = player_.y;
     playerVyN_ = 0;
     weapon_ = 1;
-    lives_ = 3;
+    hp_ = kPlayerMaxHp;
     bombs_ = 2;
+    dashT_ = 0;
+    dashCd_ = 0;
+    dashDir_ = {1, 0};
+    ghostTimer_ = 0;
     rng_.seed(0x5EED);
     bg_.setup(Backdrop::Ocean);
     bgStorm_.setup(Backdrop::Storm);
@@ -89,17 +176,23 @@ void World::start(bool continueRun) {
     reset();
     if (continueRun) {
         weapon_ = 2;
-        score_ = 0;
+        bombs_ = 3;
     }
     wave_ = 0;
-    waveT_ = 1.2f;
-    banner_ = "WAVE 1";
-    bannerT_ = 1.6f;
+    wavePhase_ = WP_Banner;
+    waveT_ = 1.5f;
+    showBanner("WAVE 1", 1.5f);
+}
+
+void World::showBanner(const std::string& s, float dur) {
+    banner_ = s;
+    bannerDur_ = dur;
+    bannerT_ = dur;
 }
 
 // ---------------------------------------------------------------- 工具
 Vector2 World::shakeOffset() const {
-    if (shake_ <= 0.01f) return {0, 0};
+    if (shake_ <= 0.01f || !app().optShake) return {0, 0};
     float a = shake_ * 18.0f;
     return {(float)GetRandomValue(-100, 100) / 100.0f * a, (float)GetRandomValue(-100, 100) / 100.0f * a};
 }
@@ -109,15 +202,26 @@ float World::bossHp01() const {
     return clampf(boss_.hp / boss_.maxHp, 0, 1);
 }
 
+float World::dashReady01() const { return clampf(1.0f - dashCd_ / kDashCd, 0, 1); }
+
+int World::enemiesLeft() const {
+    int n = 0;
+    for (const auto& e : enemies_)
+        if (e.alive) n++;
+    if (bossPending_) n++;
+    if (boss_.alive) n++;
+    return n;
+}
+
 int World::stars() const {
     if (state_ != WorldState::Cleared) return 0;
     int s = 1;
-    if (kills_ >= 34) s = 2;
-    if (kills_ >= 40 && lives_ >= 2) s = 3;
+    if (hp01() >= 0.45f) s = 2;
+    if (hp01() >= 0.75f) s = 3;
     return s;
 }
 
-void World::addBullet(Vector2 pos, Vector2 vel, float r, Color col, int kind, float dmg) {
+void World::addBullet(Vector2 pos, Vector2 vel, float r, Color col, int kind, float dmg, bool hostile, bool big) {
     if ((int)bullets_.size() > 1200) return;
     Bullet b;
     b.pos = pos;
@@ -126,16 +230,19 @@ void World::addBullet(Vector2 pos, Vector2 vel, float r, Color col, int kind, fl
     b.col = col;
     b.kind = kind;
     b.dmg = dmg;
+    b.hostile = hostile;
+    b.big = big;
     b.life = 8.0f;
     b.alive = true;
     b.spin = 0;
     bullets_.push_back(b);
 }
 
-void World::addBurst(Vector2 pos, float count, float speed, float spread, Color col, float r, float baseAngle) {
+void World::addBurst(Vector2 pos, float count, float speed, float spread, Color col, float r, float baseAngle,
+                     float dmg, bool hostile) {
     for (int i = 0; i < (int)count; i++) {
         float a = baseAngle + (count > 1 ? (-spread * 0.5f + spread * i / (count - 1)) : 0.0f);
-        addBullet(pos, {std::cos(a) * speed, std::sin(a) * speed}, r, col, 0);
+        addBullet(pos, {std::cos(a) * speed, std::sin(a) * speed}, r, col, 0, dmg, hostile);
     }
 }
 
@@ -182,6 +289,18 @@ void World::addHitSpark(Vector2 pos, Color col) {
     }
 }
 
+void World::addTrail(Vector2 pos, Vector2 dir, Color col) {
+    Particle p;
+    p.pos = pos;
+    p.vel = {-dir.x * rng_.range(40, 160) + rng_.range(-40, 40), -dir.y * rng_.range(40, 160) + rng_.range(-40, 40)};
+    p.maxLife = p.life = rng_.range(0.16f, 0.34f);
+    p.size = rng_.range(6.0f, 15.0f);
+    p.col = col;
+    p.kind = 0;
+    p.alive = true;
+    particles_.push_back(p);
+}
+
 void World::addScore(int base) {
     combo_++;
     comboT_ = 2.6f;
@@ -193,9 +312,9 @@ void World::addScore(int base) {
 void World::dropPickup(Vector2 pos) {
     float r = rng_.f();
     int kind = 0;
-    if (r < 0.14f) kind = 1;
-    else if (r < 0.24f) kind = 2;
-    else if (r > 0.62f) return;  // 其余不掉落
+    if (r < 0.16f) kind = 1;
+    else if (r < 0.30f) kind = 2;
+    else if (r > 0.66f) return;
     Pickup p;
     p.pos = pos;
     p.vel = {-90.0f, rng_.range(-40, 40)};
@@ -206,107 +325,160 @@ void World::dropPickup(Vector2 pos) {
 }
 
 // ---------------------------------------------------------------- 生成
-void World::spawnEnemy(int type, float x, float y, int pattern, float scale) {
+void World::spawnEnemy(int cls, float delay) {
     Enemy e;
-    e.type = type;
-    e.pos = {x, y};
-    e.baseY = y;
-    e.scale = scale;
-    e.maxHp = e.hp = kEnemy[type].hp * (pattern == 3 ? 1.15f : 1.0f);
-    e.pattern = pattern;
-    e.score = kEnemy[type].score;
+    e.cls = cls;
+    e.delay = delay;
+    e.st = ES_Wait;
     e.alive = true;
+    e.scale = (cls == EC_B) ? 1.12f : (cls == EC_A ? 1.02f : 0.90f);
+    e.maxHp = e.hp = kEnemy[cls].hp;
+    e.score = kEnemy[cls].score;
     e.phase = rng_.range(0, 6.28f);
-    e.fireT = rng_.range(0.7f, 1.8f);
-    e.stopX = rng_.range(1180, 1460);
-    pose::Reset(e.pose, pose::kEnemy, type == 2 ? -0.05f : -0.08f);
-    e.lastY = y;
-    if (pattern == 2) {
-        float a = rng_.range(2.55f, 3.35f);
-        e.vel = {std::cos(a) * 420.0f, std::sin(a) * 420.0f};
+    e.fireT = rng_.range(1.0f, 2.0f);
+    e.specialT = rng_.range(2.8f, 4.6f);
+    e.hpTrail = 1.0f;
+
+    // 巡航锚点全部落在画面右半边（x >= 1180）
+    float x0 = 1250, x1 = 1690, y0 = 270, y1 = 850;
+    if (cls == EC_B) { x0 = 1460; x1 = 1720; y0 = 300; y1 = 760; }
+    if (cls == EC_A) { x0 = 1310; x1 = 1650; y0 = 290; y1 = 800; }
+    // 候选点里挑离现有敌机最远的一个，避免同波次机体叠在一起
+    Vector2 best{rng_.range(x0, x1), rng_.range(y0, y1)};
+    float bestD = -1.0f;
+    for (int i = 0; i < 14; i++) {
+        Vector2 c{rng_.range(x0, x1), rng_.range(y0, y1)};
+        float d = 1e9f;
+        for (const auto& o : enemies_) {
+            if (!o.alive) continue;
+            float dx = c.x - o.home.x, dy = c.y - o.home.y;
+            d = std::min(d, dx * dx + dy * dy);
+        }
+        if (d > bestD) { bestD = d; best = c; }
     }
+    e.home = best;
+
+    e.spawn = {VW + 240 + rng_.range(0, 240), e.home.y};
+    e.pos = e.spawn;
+    pose::Reset(e.pose, pose::kEnemy, cls == EC_B ? -0.05f : -0.08f);
+    e.lastY = e.pos.y;
     enemies_.push_back(e);
 }
 
 void World::spawnWave(int idx) {
-    // 12 波，逐步加压
-    int stage = idx % 12;
-    if (stage == 0) {
-        for (int i = 0; i < 3; i++) spawnEnemy(1, 2100 + i * 220, 380 + i * 140, 1);
-    } else if (stage == 1) {
-        for (int i = 0; i < 4; i++) spawnEnemy(3, 2050 + i * 180, 300 + (i % 2) * 320, 0);
-    } else if (stage == 2) {
-        for (int i = 0; i < 2; i++) spawnEnemy(0, 2150 + i * 300, 420 + i * 260, 3);
-        for (int i = 0; i < 2; i++) spawnEnemy(1, 2000 + i * 200, 760, 1);
-    } else if (stage == 3) {
-        for (int i = 0; i < 5; i++) spawnEnemy(3, 2000 + i * 150, 260 + i * 120, 2);
-    } else if (stage == 4) {
-        for (int i = 0; i < 2; i++) spawnEnemy(2, 2200 + i * 340, 460 + i * 300, 3);
-    } else if (stage == 5) {
-        for (int i = 0; i < 3; i++) spawnEnemy(1, 2050 + i * 200, 340 + i * 200, 0);
-        for (int i = 0; i < 3; i++) spawnEnemy(1, 2350 + i * 200, 420 + i * 180, 1);
-    } else if (stage == 6) {
-        for (int i = 0; i < 4; i++) spawnEnemy(0, 2100 + i * 260, 380 + (i % 2) * 300, 3);
-    } else if (stage == 7) {
-        for (int i = 0; i < 6; i++) spawnEnemy(3, 2000 + i * 130, 300 + i * 90, 2);
-    } else if (stage == 8) {
-        for (int i = 0; i < 3; i++) spawnEnemy(2, 2150 + i * 300, 420 + i * 180, 3);
-        for (int i = 0; i < 2; i++) spawnEnemy(1, 2050 + i * 220, 820, 1);
-    } else if (stage == 9) {
-        for (int i = 0; i < 5; i++) spawnEnemy(1, 2000 + i * 160, 320 + (i % 3) * 220, i % 2);
-    } else if (stage == 10) {
-        for (int i = 0; i < 3; i++) spawnEnemy(0, 2100 + i * 300, 400 + i * 220, 3);
-        for (int i = 0; i < 3; i++) spawnEnemy(2, 2400 + i * 300, 520 + i * 160, 0);
-    } else {
-        for (int i = 0; i < 2; i++) spawnEnemy(2, 2150 + i * 320, 430 + i * 260, 3);
-        for (int i = 0; i < 4; i++) spawnEnemy(3, 2000 + i * 150, 300 + i * 160, 2);
-        for (int i = 0; i < 2; i++) spawnEnemy(0, 2500 + i * 300, 500 + i * 300, 3);
+    // 五波编队：C 小兵打头，B / A 稍后压上
+    switch (idx) {
+        case 0:
+            for (int i = 0; i < 5; i++) spawnEnemy(EC_C, i * 0.22f);
+            break;
+        case 1:
+            spawnEnemy(EC_C, 0.0f);
+            spawnEnemy(EC_C, 0.28f);
+            spawnEnemy(EC_B, 0.95f);
+            break;
+        case 2:
+            for (int i = 0; i < 3; i++) spawnEnemy(EC_C, i * 0.22f);
+            spawnEnemy(EC_A, 1.10f);
+            break;
+        case 3:
+            for (int i = 0; i < 5; i++) spawnEnemy(EC_C, i * 0.18f);
+            spawnEnemy(EC_B, 0.85f);
+            spawnEnemy(EC_A, 1.45f);
+            break;
+        default:
+            for (int i = 0; i < 3; i++) spawnEnemy(EC_C, i * 0.20f);
+            spawnEnemy(EC_A, 0.65f);
+            spawnEnemy(EC_A, 1.25f);
+            bossPending_ = true;
+            bossDelay_ = 1.7f;
+            break;
     }
-    banner_ = "WAVE " + std::to_string(idx + 1);
-    bannerT_ = 1.5f;
+}
+
+void World::activateBoss() {
+    boss_ = Enemy{};
+    boss_.cls = EC_BOSS;
+    boss_.st = ES_Enter;
+    boss_.alive = true;
+    boss_.maxHp = boss_.hp = kBossHp;
+    boss_.hpTrail = 1.0f;
+    boss_.scale = 1.0f;
+    boss_.score = 15000;
+    boss_.spawn = {VW + 460, 540};
+    boss_.home = {1480, 540};
+    boss_.pos = boss_.spawn;
+    boss_.t = 0;
+    boss_.stateT = 0;
+    boss_.fireT = 1.6f;
+    pose::Reset(boss_.pose, pose::kEnemy);
+    boss_.lastY = boss_.pos.y;
+    bossEnter_ = 0;
+    showBanner("IRON FORTRESS", 2.4f);
+    audio::play(audio::SfxWarn, 1.0f, 0.85f);
 }
 
 // ---------------------------------------------------------------- 玩家
-void World::playerHit() {
-    if (invuln_ > 0 || playerDeathT_ > 0) return;
+void World::damagePlayer(float dmg) {
+    if (invuln_ > 0 || playerDeathT_ > 0 || state_ != WorldState::Playing) return;
     if (app().godMode) return;
-    lives_--;
-    audio::play(audio::SfxDamage, 0.9f, 1.0f);
-    addExplosion(player_, 150, Color{255, 140, 90, 255}, 26);
-    shake_ = std::max(shake_, 0.9f);
-    flash_ = 0.55f;
+    hp_ = std::max(0.0f, hp_ - dmg);
+    audio::play(audio::SfxDamage, 0.95f, 1.0f);
+    addExplosion(player_, 130, Color{255, 150, 100, 255}, 18);
+    shake_ = std::max(shake_, 0.85f);
+    flash_ = 0.5f;
     combo_ = 0;
     weapon_ = std::max(1, weapon_ - 1);
-    if (lives_ <= 0) {
+    if (hp_ <= 0) {
         playerDeathT_ = 1.4f;
         state_ = WorldState::Failed;
         stateT_ = 0;
-        addExplosion(player_, 220, Color{255, 120, 80, 255}, 40);
+        addExplosion(player_, 240, Color{255, 120, 80, 255}, 44);
         audio::play(audio::SfxBigExplode, 1.0f, 0.9f);
+        shake_ = 1.2f;
     } else {
-        invuln_ = 2.4f;
-        player_ = {480, 760};
-        playerVel_ = {0, 0};
+        invuln_ = 0.85f;
     }
 }
 
 std::string World::debugInfo() const {
-    char b[256];
+    char b[320];
     int pb = 0, eb = 0;
     for (auto& x : bullets_) {
         if (!x.alive) continue;
-        if (x.vel.x > 0) pb++; else eb++;
+        if (x.hostile) eb++; else pb++;
     }
-    snprintf(b, sizeof b, "state=%d fin=%d player=(%.0f,%.0f) lives=%d inv=%.1f bullets=%d(p%d/e%d) enemies=%d alive=%d score=%d",
-             (int)state_, (int)finished_, player_.x, player_.y, lives_, invuln_, (int)bullets_.size(), pb, eb,
-             (int)enemies_.size(), (int)std::count_if(enemies_.begin(), enemies_.end(), [](const Enemy& e){ return e.alive; }), score_);
+    snprintf(b, sizeof b,
+             "deathT=%.2f pLoad=%d pSkin=%d state=%d fin=%d wave=%d/%d phase=%d hp=%.0f lives=%d dash=%.2f/%.2f "
+             "player=(%.0f,%.0f) bullets=%d(p%d/e%d) enemies=%d left=%d boss=%d charging=%d score=%d",
+             playerDeathT_, (int)assets::players[save::data().craft].loaded,
+             (int)assets::players[save::data().craft].skin[save::data().skin].id,
+             (int)state_, (int)finished_, std::min(wave_ + 1, kWaveCount), kWaveCount, wavePhase_, hp_, (int)hp_, dashT_, dashCd_, player_.x, player_.y,
+             (int)bullets_.size(), pb, eb, (int)enemies_.size(), enemiesLeft(), (int)boss_.alive,
+             (int)std::count_if(enemies_.begin(), enemies_.end(),
+                                [](const Enemy& e) { return e.alive && e.st == ES_Charge; }),
+             score_);
     return b;
 }
 
 void World::killPlayerNow() {
-    lives_ = 1;
     invuln_ = 0;
-    playerHit();
+    hp_ = 1;
+    damagePlayer(5);
+}
+
+void World::startDash(Vector2 dir) {
+    float l = std::sqrt(dir.x * dir.x + dir.y * dir.y);
+    if (l < 0.0001f) { dir = {1, 0}; l = 1.0f; }
+    dashDir_ = {dir.x / l, dir.y / l};
+    dashT_ = kDashDur;
+    dashCd_ = kDashCd;
+    invuln_ = std::max(invuln_, kDashDur + 0.14f);
+    ghostTimer_ = 0;
+    audio::play(audio::SfxDash, 0.9f, 1.0f);
+    for (int i = 0; i < 8; i++) {
+        float back = rng_.range(0, 30);
+        addTrail({player_.x - dashDir_.x * back, player_.y - dashDir_.y * back}, dashDir_, pal::kCyan);
+    }
 }
 
 void World::updatePlayer(float dt, bool autopilot) {
@@ -315,10 +487,13 @@ void World::updatePlayer(float dt, bool autopilot) {
         return;
     }
     if (invuln_ > 0) invuln_ -= dt;
+    if (dashCd_ > 0) dashCd_ = std::max(0.0f, dashCd_ - dt);
 
+    const Input& in = app().in;
     Vector2 dir{0, 0};
+
     if (autopilot) {
-        // 自动演示：躲弹 + 居中
+        // 自动演示：躲弹 + 躲冲锋 + 居中
         autopilotT_ -= dt;
         Vector2 repulse{0, 0};
         for (const auto& b : bullets_) {
@@ -332,16 +507,50 @@ void World::updatePlayer(float dt, bool autopilot) {
             repulse.x += dx / d * (210 - d) * 0.6f;
             repulse.y += dy / d * (210 - d);
         }
+        for (const auto& e : enemies_) {
+            if (!e.alive || (e.st != ES_Charge && e.st != ES_Dash)) continue;
+            float dx = player_.x - e.pos.x, dy = player_.y - e.pos.y;
+            float d2 = dx * dx + dy * dy;
+            if (d2 > 620 * 620) continue;
+            float d = std::sqrt(d2) + 0.01f;
+            repulse.x += dx / d * (620 - d) * 0.35f;
+            repulse.y += dy / d * (620 - d) * 1.1f;
+        }
         float targetY = clampf(player_.y + repulse.y * 0.06f, 320, 980);
         targetY = lerpf(targetY, 700, 0.35f);
         float targetX = clampf(460 + repulse.x * 0.02f, 240, 900);
+        // 自动演示也要瞄准：否则永远打不到不同高度的敌机，波次卡死
+        float aimY = -1e9f, bestD = 1e9f;
+        for (const auto& e : enemies_) {
+            if (!e.alive || e.delay > 0) continue;
+            float d = std::fabs(e.pos.y - player_.y);
+            if (d < bestD) { bestD = d; aimY = e.pos.y; }
+        }
+        if (boss_.alive) aimY = boss_.pos.y;
+        if (aimY > -1e8f) targetY = clampf(lerpf(aimY, targetY, 0.25f), 320, 980);
         autoTarget_ = {targetX, targetY};
+
         Vector2 d{autoTarget_.x - player_.x, autoTarget_.y - player_.y};
         float l = std::sqrt(d.x * d.x + d.y * d.y);
         if (l > 2) { d.x /= l; d.y /= l; } else { d = {0, 0}; }
         dir = d;
+
+        // 演示也会用闪身：站在锁定线上就横向闪开
+        if (dashT_ <= 0 && dashCd_ <= 0) {
+            for (const auto& e : enemies_) {
+                if (!e.alive || e.st != ES_Charge) continue;
+                Vector2 rel{player_.x - e.pos.x, player_.y - e.pos.y};
+                float along = rel.x * e.lockDir.x + rel.y * e.lockDir.y;
+                float perp = std::fabs(-rel.x * e.lockDir.y + rel.y * e.lockDir.x);
+                if (along > 0 && perp < 80.0f) {
+                    Vector2 pd{-e.lockDir.y, e.lockDir.x};
+                    if (rel.x * pd.x + rel.y * pd.y < 0) { pd.x = -pd.x; pd.y = -pd.y; }
+                    startDash(pd);
+                    break;
+                }
+            }
+        }
     } else {
-        const Input& in = app().in;
         if (in.down(KEY_LEFT) || in.down(KEY_A)) dir.x -= 1;
         if (in.down(KEY_RIGHT) || in.down(KEY_D)) dir.x += 1;
         if (in.down(KEY_UP) || in.down(KEY_W)) dir.y -= 1;
@@ -350,7 +559,7 @@ void World::updatePlayer(float dt, bool autopilot) {
             dir.x *= 0.7071f;
             dir.y *= 0.7071f;
         }
-        // 鼠标操控：按住右键或移动时跟随
+        // 鼠标操控：按住左键时跟随
         if (in.lmb && in.mouseMoved) {
             float k = 1.0f - std::exp(-dt * 18.0f);
             player_.x = lerpf(player_.x, in.mouse.x, k);
@@ -358,24 +567,44 @@ void World::updatePlayer(float dt, bool autopilot) {
         }
     }
 
-    player_.x += dir.x * kPlayerSpeed * dt;
-    player_.y += dir.y * kPlayerSpeed * dt;
-    player_.x = clampf(player_.x, 110, VW - 520);
+    // ---- 闪身：Shift + 方向（无方向则朝机头 +X）
+    if (!autopilot && dashT_ <= 0 && dashCd_ <= 0) {
+        bool shiftDown = in.down(KEY_LEFT_SHIFT) || in.down(KEY_RIGHT_SHIFT);
+        bool shiftHit = in.pressed(KEY_LEFT_SHIFT) || in.pressed(KEY_RIGHT_SHIFT);
+        bool dirHit = in.pressed(KEY_LEFT) || in.pressed(KEY_RIGHT) || in.pressed(KEY_UP) || in.pressed(KEY_DOWN) ||
+                      in.pressed(KEY_A) || in.pressed(KEY_D) || in.pressed(KEY_W) || in.pressed(KEY_S);
+        bool wantDash = (shiftDown && dirHit) || (shiftHit && (dir.x != 0 || dir.y != 0));
+        if (wantDash) startDash(dir);
+    }
+
+    if (dashT_ > 0) {
+        dashT_ = std::max(0.0f, dashT_ - dt);
+        player_.x += dashDir_.x * kDashSpeed * dt;
+        player_.y += dashDir_.y * kDashSpeed * dt;
+        ghostTimer_ -= dt;
+        if (ghostTimer_ <= 0) {
+            ghostTimer_ = 0.028f;
+            ghosts_.push_back({player_, playerPose_, 0.30f, 0.30f});
+        }
+    } else {
+        player_.x += dir.x * kPlayerSpeed * dt;
+        player_.y += dir.y * kPlayerSpeed * dt;
+    }
+    player_.x = clampf(player_.x, kPlayerMinX, kPlayerMaxX);
     player_.y = clampf(player_.y, 300, VH - 70);
 
     playerVel_ = {dir.x * kPlayerSpeed, dir.y * kPlayerSpeed};
 
-    // 姿态 = 运动的结果：用真实位移反推垂直速度（键鼠一致），再指数趋近目标倾角
+    // 姿态 = 运动的结果：用真实位移反推垂直速度（键鼠 / 闪身一致）
     if (dt > 0.0001f) {
-        float vyPx = (player_.y - playerLastY_) / dt;   // 屏幕坐标，向下为正
-        float vyN = clampf(-vyPx / kPlayerSpeed, -1.0f, 1.0f);  // 归一化，向上为正
+        float vyPx = (player_.y - playerLastY_) / dt;
+        float vyN = clampf(-vyPx / kPlayerSpeed, -1.0f, 1.0f);
         playerVyN_ = lerpf(playerVyN_, vyN, 1.0f - std::exp(-dt * 18.0f));
     }
     playerLastY_ = player_.y;
     pose::Update(playerPose_, pose::kPlayer, playerVyN_, dt);
 
     // 射击
-    const Input& in = app().in;
     bool firing = autopilot || in.down(save::data().keyFire) || in.down(KEY_SPACE) || in.lmb;
     fireCd_ -= dt;
     if (firing && fireCd_ <= 0) {
@@ -384,7 +613,7 @@ void World::updatePlayer(float dt, bool autopilot) {
         float bx = player_.x + 96;
         audio::play(audio::SfxShot, 0.28f, 0.94f + rng_.range(0, 0.12f));
         auto shot = [&](float oy, float vy) {
-            addBullet({bx, player_.y + oy}, {1980.0f, vy}, 7.0f, Color{140, 245, 255, 255}, 2, 2.0f);
+            addBullet({bx, player_.y + oy}, {1980.0f, vy}, 7.0f, Color{140, 245, 255, 255}, 2, 2.0f, false);
         };
         if (lvl == 1) shot(0, 0);
         else if (lvl == 2) { shot(-16, 0); shot(16, 0); }
@@ -400,25 +629,30 @@ void World::updatePlayer(float dt, bool autopilot) {
             shake_ = std::max(shake_, 1.0f);
             audio::play(audio::SfxBomb, 1.0f, 1.0f);
             for (auto& b : bullets_) {
-                if (!b.alive) continue;
+                if (!b.alive || !b.hostile) continue;
                 addHitSpark(b.pos, Color{200, 240, 255, 255});
                 b.alive = false;
             }
-            for (auto& e : enemies_) {
-                if (!e.alive) continue;
-                e.hp -= 26;
+            for (size_t i = 0; i < enemies_.size(); i++) {
+                Enemy& e = enemies_[i];
+                if (!e.alive || e.delay > 0) continue;
                 e.hitFlash = 0.2f;
-                if (e.hp <= 0) {
-                    e.alive = false;
-                    addExplosion(e.pos, 120, Color{255, 170, 90, 255}, 20);
-                    addScore(e.score);
-                    kills_++;
-                    dropPickup(e.pos);
-                }
+                damageEnemy((int)i, 26);
             }
             if (boss_.alive) {
                 boss_.hp -= 90;
                 boss_.hitFlash = 0.25f;
+                if (boss_.hp <= 0) {
+                    boss_.alive = false;
+                    score_ += 15000;
+                    kills_++;
+                    shake_ = 1.4f;
+                    flash_ = 0.9f;
+                    audio::play(audio::SfxBigExplode, 1.0f, 0.8f);
+                    for (int k = 0; k < 8; k++)
+                        addExplosion({boss_.pos.x + rng_.range(-200, 200), boss_.pos.y + rng_.range(-180, 180)}, 240,
+                                     Color{255, 150, 90, 255}, 30);
+                }
             }
         }
     }
@@ -432,18 +666,17 @@ void World::updateBullets(float dt) {
         b.pos.x += b.vel.x * dt;
         b.pos.y += b.vel.y * dt;
         b.life -= dt;
-        if (b.life <= 0 || b.pos.x < -120 || b.pos.x > VW + 260 || b.pos.y < -160 || b.pos.y > VH + 160)
+        if (b.life <= 0 || b.pos.x < -160 || b.pos.x > VW + 260 || b.pos.y < -180 || b.pos.y > VH + 180)
             b.alive = false;
     }
-    // 玩家子弹 vs 敌机
+
+    // 玩家弹 → 敌机
     for (auto& b : bullets_) {
-        if (!b.alive || b.dmg <= 0) continue;
-        bool playerBullet = (b.vel.x > 0);
-        if (!playerBullet) continue;
+        if (!b.alive || b.hostile) continue;
         for (size_t i = 0; i < enemies_.size(); i++) {
             Enemy& e = enemies_[i];
-            if (!e.alive) continue;
-            float rr = kEnemy[e.type].span * e.scale * 0.34f;
+            if (!e.alive || e.delay > 0) continue;
+            float rr = EnemySpan(e) * 0.34f;
             float dx = b.pos.x - e.pos.x, dy = b.pos.y - e.pos.y;
             if (dx * dx + dy * dy < rr * rr) {
                 b.alive = false;
@@ -463,35 +696,34 @@ void World::updateBullets(float dt) {
                 audio::play(audio::SfxHit, 0.18f, 1.2f);
                 if (boss_.hp <= 0 && boss_.alive) {
                     boss_.alive = false;
-                    state_ = WorldState::Cleared;
-                    stateT_ = 0;
-                    score_ += 12000;
-                    kills_ += 6;
+                    score_ += 15000;
+                    kills_++;
                     shake_ = 1.4f;
                     flash_ = 0.9f;
                     audio::play(audio::SfxBigExplode, 1.0f, 0.8f);
-                    for (int k = 0; k < 6; k++) {
-                        Vector2 p = {boss_.pos.x + rng_.range(-180, 180), boss_.pos.y + rng_.range(-160, 160)};
-                        addExplosion(p, 220, Color{255, 150, 90, 255}, 28);
+                    for (int k = 0; k < 8; k++) {
+                        Vector2 p = {boss_.pos.x + rng_.range(-200, 200), boss_.pos.y + rng_.range(-180, 180)};
+                        addExplosion(p, 240, Color{255, 150, 90, 255}, 30);
                     }
                 }
             }
         }
     }
-    // 敌弹 vs 玩家
-    if (playerDeathT_ <= 0 && invuln_ <= 0) {
+
+    // 敌弹 → 玩家
+    if (playerDeathT_ <= 0 && invuln_ <= 0 && state_ == WorldState::Playing) {
         for (auto& b : bullets_) {
-            if (!b.alive || b.vel.x >= 0) continue;
+            if (!b.alive || !b.hostile) continue;
             float dx = b.pos.x - player_.x, dy = b.pos.y - player_.y;
             float rr = kPlayerR + b.r * 0.72f;
             if (dx * dx + dy * dy < rr * rr) {
                 b.alive = false;
-                playerHit();
+                damagePlayer(b.dmg);
                 break;
             }
         }
     }
-    // 清理
+
     if (bullets_.size() > 64) {
         bullets_.erase(std::remove_if(bullets_.begin(), bullets_.end(), [](const Bullet& b) { return !b.alive; }),
                        bullets_.end());
@@ -500,13 +732,15 @@ void World::updateBullets(float dt) {
 
 void World::damageEnemy(int idx, float dmg) {
     Enemy& e = enemies_[idx];
+    if (!e.alive) return;
     e.hp -= dmg;
     e.hitFlash = 0.08f;
-    if (e.hp <= 0 && e.alive) {
+    if (e.hp <= 0) {
         e.alive = false;
+        e.st = ES_Dead;
         kills_++;
         addScore(e.score);
-        float sz = kEnemy[e.type].span * e.scale;
+        float sz = EnemySpan(e);
         addExplosion(e.pos, sz * 0.8f, Color{255, 168, 80, 255}, 18);
         audio::play(audio::SfxExplode, 0.55f, 0.95f + rng_.range(0, 0.2f));
         shake_ = std::max(shake_, 0.28f);
@@ -514,139 +748,349 @@ void World::damageEnemy(int idx, float dmg) {
     }
 }
 
+void World::ramExplode(Enemy& e) {
+    e.alive = false;
+    e.st = ES_Dead;
+    kills_++;
+    addScore(e.score);
+    addExplosion(e.pos, 240, Color{255, 150, 90, 255}, 32);
+    audio::play(audio::SfxExplode, 0.95f, 0.8f);
+    shake_ = std::max(shake_, 0.95f);
+    flash_ = 0.35f;
+    dropPickup(e.pos);
+}
+
 // ---------------------------------------------------------------- 敌机
 void World::enemyShoot(const Enemy& e) {
     Vector2 aim{player_.x - e.pos.x, player_.y - e.pos.y};
     float base = std::atan2(aim.y, aim.x);
-    switch (e.type) {
-        case 0:
-            addBurst(e.pos, 5, 320, 0.66f, BulletColor(1), 11, base);
+    switch (e.cls) {
+        case EC_C:
+            addBullet(e.pos, {std::cos(base) * 520, std::sin(base) * 520}, 9, BulletColor(0), 0, kDmgBullet, true);
             break;
-        case 1:
-            addBullet(e.pos, {std::cos(base) * 360, std::sin(base) * 360}, 9, BulletColor(0), 0);
-            break;
-        case 2:
-            addBurst(e.pos, 10, 260, 6.283f, BulletColor(2), 12, rng_.range(0, 6.28f));
+        case EC_B:
+            addBurst({e.pos.x - 40, e.pos.y}, 3, 470, 0.22f, BulletColor(1), 10, base, kDmgBullet, true);
             break;
         default:
-            for (int i = 0; i < 3; i++) {
-                float a = base + (i - 1) * 0.14f;
-                addBullet(e.pos, {std::cos(a) * 420, std::sin(a) * 420}, 8, BulletColor(1), 1);
-            }
+            addBurst(e.pos, 3, 430, 0.20f, BulletColor(1), 10, base, kDmgBullet, true);
             break;
     }
-    audio::play(audio::SfxHit, 0.12f, 0.7f);
+    audio::play(audio::SfxHit, 0.1f, 0.7f);
+}
+
+void World::beginCharge(Enemy& e) {
+    Vector2 d{player_.x - e.pos.x, player_.y - e.pos.y};
+    float l = std::sqrt(d.x * d.x + d.y * d.y);
+    if (l < 1.0f) { d = {-1, 0}; l = 1.0f; }
+    e.lockDir = {d.x / l, d.y / l};
+    e.st = ES_Charge;
+    e.stateT = 0;
+    audio::play(audio::SfxCharge, 0.8f, 1.0f);
+}
+
+void World::updateC(Enemy& e, float dt) {
+    switch (e.st) {
+        case ES_Enter: {
+            float k = easeOutCubic(clampf(e.stateT / 0.95f, 0, 1));
+            e.pos.x = lerpf(e.spawn.x, e.home.x, k);
+            e.pos.y = lerpf(e.spawn.y, e.home.y, k);
+            if (e.stateT >= 0.95f) {
+                e.st = ES_Patrol;
+                e.stateT = 0;
+                e.fireT = rng_.range(0.7f, 1.5f);
+            }
+            break;
+        }
+        case ES_Patrol: {
+            // 在右半场里绕锚点游走，绝不追着玩家跑
+            e.pos.x = e.home.x + std::sin(e.t * 0.62f + e.phase) * 58.0f;
+            e.pos.y = e.home.y + std::sin(e.t * 1.05f + e.phase * 1.7f) * 92.0f;
+            e.fireT -= dt;
+            if (e.fireT <= 0) {
+                enemyShoot(e);
+                e.fireT = rng_.range(1.6f, 2.3f);
+            }
+            break;
+        }
+        default: break;
+    }
+}
+
+void World::updateB(Enemy& e, float dt) {
+    switch (e.st) {
+        case ES_Enter: {
+            float k = easeOutCubic(clampf(e.stateT / 1.15f, 0, 1));
+            e.pos.x = lerpf(e.spawn.x, e.home.x, k);
+            e.pos.y = lerpf(e.spawn.y, e.home.y, k);
+            if (e.stateT >= 1.15f) {
+                e.st = ES_Patrol;
+                e.stateT = 0;
+                e.fireT = rng_.range(1.0f, 1.8f);
+            }
+            break;
+        }
+        case ES_Patrol: {
+            e.pos.x = e.home.x + std::sin(e.t * 0.42f + e.phase) * 32.0f;
+            e.pos.y = e.home.y + std::sin(e.t * 0.74f + e.phase) * 76.0f;
+
+            if (e.tell > 0) {
+                e.tell -= dt;
+                if (e.tell <= 0) {
+                    // 大炮弹：慢、大、1/4 伤害
+                    Vector2 aim{player_.x - e.pos.x, player_.y - e.pos.y};
+                    float base = std::atan2(aim.y, aim.x);
+                    addBullet({e.pos.x - 50, e.pos.y}, {std::cos(base) * 330, std::sin(base) * 330}, 30,
+                              Color{255, 128, 40, 255}, 1, kDmgShell, true, true);
+                    audio::play(audio::SfxExplode, 0.35f, 1.5f);
+                    shake_ = std::max(shake_, 0.2f);
+                }
+            }
+            e.specialT -= dt;
+            if (e.specialT <= 0 && e.tell <= 0) {
+                e.tell = 0.55f;
+                e.specialT = rng_.range(5.4f, 7.0f);
+                audio::play(audio::SfxCharge, 0.45f, 1.35f);
+            }
+
+            e.fireT -= dt;
+            if (e.fireT <= 0) {
+                enemyShoot(e);
+                e.fireT = rng_.range(2.0f, 2.6f);
+            }
+            break;
+        }
+        default: break;
+    }
+}
+
+void World::updateA(Enemy& e, float dt) {
+    switch (e.st) {
+        case ES_Enter: {
+            float k = easeOutCubic(clampf(e.stateT / 0.85f, 0, 1));
+            e.pos.x = lerpf(e.spawn.x, e.home.x, k);
+            e.pos.y = lerpf(e.spawn.y, e.home.y, k);
+            if (e.stateT >= 0.85f) {
+                e.st = ES_Patrol;
+                e.stateT = 0;
+                e.specialT = rng_.range(2.2f, 3.4f);
+            }
+            break;
+        }
+        case ES_Patrol: {
+            e.pos.x = e.home.x + std::sin(e.t * 0.55f + e.phase) * 52.0f;
+            e.pos.y = e.home.y + std::sin(e.t * 0.90f + e.phase * 1.3f) * 84.0f;
+            e.specialT -= dt;
+            if (e.specialT <= 0 && player_.x < e.pos.x - 260.0f) beginCharge(e);
+            break;
+        }
+        case ES_Charge: {
+            // 锁定方向在蓄力开始就固定：玩家只要离开这条线就能躲掉
+            float p = clampf(e.stateT / kChargeTime, 0, 1);
+            e.pos.x += std::sin(e.t * 46.0f) * 1.6f * (0.35f + p);
+            if (e.stateT >= kChargeTime) {
+                e.st = ES_Dash;
+                e.stateT = 0;
+                e.vel = {e.lockDir.x * kRamSpeed, e.lockDir.y * kRamSpeed};
+                audio::play(audio::SfxDash, 0.7f, 0.62f);
+                addExplosion(e.pos, 70, Color{255, 170, 120, 255}, 8);
+            }
+            break;
+        }
+        case ES_Dash: {
+            e.pos.x += e.vel.x * dt;
+            e.pos.y += e.vel.y * dt;
+            for (int i = 0; i < 2; i++) addTrail(e.pos, e.lockDir, Color{255, 120, 90, 255});
+
+            float dx = e.pos.x - player_.x, dy = e.pos.y - player_.y;
+            if (dx * dx + dy * dy < 92.0f * 92.0f && playerDeathT_ <= 0) {
+                damagePlayer(kDmgRam);
+                ramExplode(e);
+                return;
+            }
+            if (e.pos.x < -320 || e.pos.y < -340 || e.pos.y > VH + 340 || e.stateT > 2.6f) {
+                // 冲空了：从右侧重新进场，回到巡航位（不消失，波次才能被清空）
+                e.spawn = {VW + 280, clampf(e.home.y, 300, 800)};
+                e.home = {rng_.range(1310.0f, 1650.0f), rng_.range(290.0f, 800.0f)};
+                e.pos = e.spawn;
+                e.vel = {0, 0};
+                e.st = ES_Enter;
+                e.stateT = 0;
+            }
+            break;
+        }
+        default: break;
+    }
 }
 
 void World::updateEnemies(float dt) {
     for (auto& e : enemies_) {
         if (!e.alive) continue;
-        e.t += dt;
-        if (e.hitFlash > 0) e.hitFlash -= dt;
-        e.fireT -= dt;
-
-        switch (e.pattern) {
-            case 0:  // 直线
-                e.pos.x -= 360.0f * dt;
-                break;
-            case 1:  // 蛇形
-                e.pos.x -= 300.0f * dt;
-                e.pos.y = e.baseY + std::sin(e.t * 2.2f + e.phase) * 120.0f;
-                break;
-            case 2:  // 俯冲
-                e.pos.x += e.vel.x * dt;
-                e.pos.y += e.vel.y * dt;
-                break;
-            default:  // 定点
-                if (e.pos.x > e.stopX) {
-                    e.pos.x -= 420.0f * dt;
-                } else {
-                    e.pos.y = e.baseY + std::sin(e.t * 1.3f + e.phase) * 46.0f;
-                    if (e.t > 7.0f) e.pos.x -= 420.0f * dt;
-                }
-                break;
+        if (e.delay > 0) {
+            e.delay -= dt;
+            continue;
         }
+        if (e.st == ES_Wait) {
+            e.st = ES_Enter;
+            e.stateT = 0;
+        }
+        e.t += dt;
+        e.stateT += dt;
+        if (e.hitFlash > 0) e.hitFlash -= dt;
+
+        float target = clampf(e.hp / e.maxHp, 0, 1);
+        e.hpTrail = (e.hpTrail > target) ? approach(e.hpTrail, target, dt * 0.85f) : target;
+
+        switch (e.cls) {
+            case EC_C: updateC(e, dt); break;
+            case EC_B: updateB(e, dt); break;
+            default:   updateA(e, dt); break;
+        }
+        if (!e.alive) continue;
 
         // 姿态：与玩家共用同一套公式，倾角跟着轨迹起伏
         if (dt > 0.0001f) {
-            float vy = (e.pos.y - e.lastY) / dt;  // 屏幕坐标，向下为正
+            float vy = (e.pos.y - e.lastY) / dt;
             float vyN = clampf(-vy / 300.0f, -1.0f, 1.0f);
             pose::Update(e.pose, pose::kEnemy, vyN, dt);
         }
         e.lastY = e.pos.y;
-
-        if (e.fireT <= 0 && e.pos.x < VW + 40 && e.pos.x > 60) {
-            enemyShoot(e);
-            e.fireT = (e.type == 2) ? 3.0f : (e.type == 0 ? 2.3f : 1.7f);
-        }
-        if (e.pos.x < -320 || e.pos.y > VH + 320 || e.pos.y < -320) e.alive = false;
     }
     if (enemies_.size() > 40)
         enemies_.erase(std::remove_if(enemies_.begin(), enemies_.end(), [](const Enemy& e) { return !e.alive; }),
                        enemies_.end());
 }
 
+bool World::enemiesAllDead() const {
+    for (const auto& e : enemies_)
+        if (e.alive) return false;
+    return true;
+}
+
 // ---------------------------------------------------------------- Boss
 void World::bossShoot(int pattern) {
-    float hp01 = bossHp01();
+    Vector2 aim{player_.x - boss_.pos.x, player_.y - boss_.pos.y};
+    float base = std::atan2(aim.y, aim.x);
     switch (pattern) {
-        case 0: {
-            Vector2 aim{player_.x - boss_.pos.x, player_.y - boss_.pos.y};
-            float base = std::atan2(aim.y, aim.x);
-            addBurst({boss_.pos.x - 60, boss_.pos.y + 40}, 7, 380, 0.9f, BulletColor(0), 12, base);
+        case 0:  // 三向
+            addBurst({boss_.pos.x - 90, boss_.pos.y + 30}, 3, 520, 0.26f, BulletColor(1), 13, base, kDmgBullet, true);
             break;
-        }
-        case 1: {
-            int n = hp01 < 0.4f ? 18 : 14;
-            float off = boss_.t * 0.9f;
-            for (int i = 0; i < n; i++) {
-                float a = off + i * 6.2831f / n;
-                addBullet({boss_.pos.x - 40, boss_.pos.y}, {std::cos(a) * 300, std::sin(a) * 300}, 11,
-                          BulletColor(2), 0);
-            }
+        case 1:  // 五向
+            addBurst({boss_.pos.x - 90, boss_.pos.y + 30}, 5, 470, 0.62f, BulletColor(0), 13, base, kDmgBullet, true);
             break;
-        }
-        default: {
-            for (int k = 0; k < 3; k++) {
-                float a = PI + (k - 1) * 0.42f;
-                addBullet({boss_.pos.x - 80, boss_.pos.y + 20},
-                          {std::cos(a) * 460, std::sin(a) * 460}, 10, BulletColor(1), 1);
-            }
+        default:  // 大炮弹
+            addBullet({boss_.pos.x - 130, boss_.pos.y + 10}, {std::cos(base - 0.10f) * 320, std::sin(base - 0.10f) * 320},
+                      34, Color{255, 128, 40, 255}, 1, kDmgShell, true, true);
+            addBullet({boss_.pos.x - 130, boss_.pos.y + 10}, {std::cos(base + 0.10f) * 320, std::sin(base + 0.10f) * 320},
+                      34, Color{255, 128, 40, 255}, 1, kDmgShell, true, true);
             break;
-        }
     }
     audio::play(audio::SfxHit, 0.16f, 0.62f);
+}
+
+void World::beginBossCharge() {
+    Vector2 d{player_.x - boss_.pos.x, player_.y - boss_.pos.y};
+    float l = std::sqrt(d.x * d.x + d.y * d.y);
+    if (l < 1.0f) { d = {-1, 0}; l = 1.0f; }
+    boss_.lockDir = {d.x / l, d.y / l};
+    boss_.st = ES_Charge;
+    boss_.stateT = 0;
+    audio::play(audio::SfxCharge, 1.0f, 0.72f);
+}
+
+int World::pickBossAttack(float hp01) {
+    // 0 三向 1 五向 2 大炮弹 3 冲撞
+    float r = rng_.f();
+    if (hp01 > 0.66f) return (r < 0.40f) ? 0 : (r < 0.66f ? 1 : (r < 0.90f ? 2 : 3));
+    if (hp01 > 0.33f) return (r < 0.28f) ? 0 : (r < 0.56f ? 1 : (r < 0.82f ? 2 : 3));
+    return (r < 0.20f) ? 0 : (r < 0.46f ? 1 : (r < 0.72f ? 2 : 3));
 }
 
 void World::updateBoss(float dt) {
     if (!boss_.alive) return;
     boss_.t += dt;
+    boss_.stateT += dt;
     if (boss_.hitFlash > 0) boss_.hitFlash -= dt;
 
-    if (bossEnter_ < 1.0f) {
-        bossEnter_ = std::min(1.0f, bossEnter_ + dt / 2.2f);
-        boss_.pos.x = lerpf(VW + 400, 1430, easeOutCubic(bossEnter_));
-        boss_.pos.y = 520 + std::sin(boss_.t * 0.9f) * 24;
-        return;
+    float hp01 = bossHp01();
+    boss_.hpTrail = (boss_.hpTrail > hp01) ? approach(boss_.hpTrail, hp01, dt * 0.8f) : hp01;
+
+    switch (boss_.st) {
+        case ES_Enter: {
+            float k = easeOutCubic(clampf(boss_.stateT / 2.0f, 0, 1));
+            boss_.pos.x = lerpf(boss_.spawn.x, boss_.home.x, k);
+            boss_.pos.y = lerpf(boss_.spawn.y, boss_.home.y, k);
+            if (boss_.stateT >= 2.0f) {
+                boss_.st = ES_Patrol;
+                boss_.stateT = 0;
+                boss_.fireT = 1.4f;
+            }
+            break;
+        }
+        case ES_Charge: {
+            if (boss_.stateT >= kBossChargeTime) {
+                boss_.st = ES_Dash;
+                boss_.stateT = 0;
+                boss_.vel = {boss_.lockDir.x * 1250.0f, boss_.lockDir.y * 1250.0f};
+                audio::play(audio::SfxDash, 0.85f, 0.55f);
+                shake_ = std::max(shake_, 0.5f);
+            }
+            break;
+        }
+        case ES_Dash: {
+            boss_.pos.x += boss_.vel.x * dt;
+            boss_.pos.y += boss_.vel.y * dt;
+            for (int i = 0; i < 3; i++) addTrail(boss_.pos, boss_.lockDir, Color{255, 120, 90, 255});
+            float dx = boss_.pos.x - player_.x, dy = boss_.pos.y - player_.y;
+            if (dx * dx + dy * dy < 230.0f * 230.0f && playerDeathT_ <= 0) damagePlayer(kDmgRam);
+            if (boss_.pos.x < -460 || boss_.pos.y < -460 || boss_.pos.y > VH + 460 || boss_.stateT > 2.8f) {
+                boss_.spawn = boss_.pos;
+                boss_.st = ES_Return;
+                boss_.stateT = 0;
+            }
+            break;
+        }
+        case ES_Return: {
+            float k = easeOutCubic(clampf(boss_.stateT / 1.5f, 0, 1));
+            boss_.pos.x = lerpf(boss_.spawn.x, boss_.home.x, k);
+            boss_.pos.y = lerpf(boss_.spawn.y, boss_.home.y, k);
+            if (boss_.stateT >= 1.5f) {
+                boss_.st = ES_Patrol;
+                boss_.stateT = 0;
+                boss_.fireT = 0.9f;
+            }
+            break;
+        }
+        default: {
+            boss_.pos.y = boss_.home.y + std::sin(boss_.t * 0.70f) * 92.0f;
+            boss_.pos.x = boss_.home.x + std::sin(boss_.t * 0.45f) * 36.0f;
+
+            if (boss_.tell > 0) {
+                boss_.tell -= dt;
+                if (boss_.tell <= 0) bossShoot(2);
+            }
+            boss_.fireT -= dt;
+            if (boss_.fireT <= 0 && boss_.tell <= 0) {
+                int pick = pickBossAttack(hp01);
+                float interval = (hp01 > 0.66f) ? 1.5f : (hp01 > 0.33f ? 1.15f : 0.85f);
+                if (pick == 3) {
+                    beginBossCharge();
+                } else if (pick == 2) {
+                    boss_.tell = 0.6f;
+                    boss_.fireT = interval + 0.4f;
+                } else {
+                    bossShoot(pick);
+                    boss_.fireT = interval;
+                }
+            }
+            break;
+        }
     }
-    boss_.pos.y = 520 + std::sin(boss_.t * 0.75f) * 90;
-    boss_.pos.x = 1430 + std::sin(boss_.t * 0.5f) * 40;
+
     if (dt > 0.0001f) {
         float vy = (boss_.pos.y - boss_.lastY) / dt;
         pose::Update(boss_.pose, pose::kEnemy, clampf(-vy / 300.0f, -1.0f, 1.0f), dt);
     }
     boss_.lastY = boss_.pos.y;
-
-    boss_.fireT -= dt;
-    if (boss_.fireT <= 0) {
-        float hp01 = bossHp01();
-        int p = 0;
-        if (hp01 > 0.66f) p = (rng_.f() < 0.6f) ? 0 : 2;
-        else if (hp01 > 0.33f) p = (rng_.f() < 0.55f) ? 1 : 0;
-        else p = (rng_.f() < 0.5f) ? 1 : 2;
-        bossShoot(p);
-        boss_.fireT = (hp01 > 0.66f ? 1.05f : (hp01 > 0.33f ? 0.82f : 0.62f));
-    }
 }
 
 // ---------------------------------------------------------------- 粒子/拾取
@@ -661,10 +1105,15 @@ void World::updateParticles(float dt) {
         p.life -= dt;
         if (p.life <= 0) p.alive = false;
     }
-    if (particles_.size() > 200)
+    if (particles_.size() > 220)
         particles_.erase(std::remove_if(particles_.begin(), particles_.end(),
                                         [](const Particle& p) { return !p.alive; }),
                          particles_.end());
+
+    for (auto& g : ghosts_) g.life -= dt;
+    if (!ghosts_.empty())
+        ghosts_.erase(std::remove_if(ghosts_.begin(), ghosts_.end(), [](const Ghost& g) { return g.life <= 0; }),
+                      ghosts_.end());
 }
 
 void World::updatePickups(float dt) {
@@ -677,13 +1126,14 @@ void World::updatePickups(float dt) {
         p.vel.y *= (1.0f - 1.2f * dt);
         p.pos.y += std::sin(p.t * 3.0f) * 18.0f * dt;
         if (p.pos.x < -80 || p.t > 9.0f) p.alive = false;
+        if (playerDeathT_ > 0 || state_ != WorldState::Playing) continue;
         float dx = p.pos.x - player_.x, dy = p.pos.y - player_.y;
         if (dx * dx + dy * dy < 78 * 78) {
             p.alive = false;
             audio::play(audio::SfxPickup, 0.7f, 1.0f);
             if (p.kind == 0) weapon_ = clampi(weapon_ + 1, 1, 4);
             else if (p.kind == 1) bombs_ = clampi(bombs_ + 1, 0, 5);
-            else lives_ = clampi(lives_ + 1, 0, 5);
+            else hp_ = std::min(kPlayerMaxHp, hp_ + 35.0f);
             score_ += 200;
         }
     }
@@ -693,27 +1143,53 @@ void World::updatePickups(float dt) {
 }
 
 // ---------------------------------------------------------------- 波次
-void World::updateSpawner(float dt) {
-    if (state_ == WorldState::Playing) {
-        waveT_ -= dt;
-        if (waveT_ <= 0) {
-            if (wave_ < waveCount_) {
+void World::updateWave(float dt) {
+    if (state_ != WorldState::Playing) return;
+
+    if (bossPending_) {
+        bossDelay_ -= dt;
+        if (bossDelay_ <= 0) {
+            bossPending_ = false;
+            activateBoss();
+        }
+    }
+
+    switch (wavePhase_) {
+        case WP_Banner:
+            waveT_ -= dt;
+            if (waveT_ <= 0) {
                 spawnWave(wave_);
+                wavePhase_ = WP_Fight;
+                waveT_ = 0;
+            }
+            break;
+
+        case WP_Fight:
+            // 关键规则：必须打完本波所有敌人（含 Boss）才允许进入下一波
+            if (!bossPending_ && !boss_.alive && enemiesAllDead()) {
+                wavePhase_ = WP_Gap;
+                waveT_ = 2.0f;
+                showBanner("WAVE CLEAR", 1.5f);
+                score_ += 600 * (wave_ + 1);
+                audio::play(audio::SfxUiSelect, 0.7f, 1.1f);
+            }
+            break;
+
+        default:  // WP_Gap
+            waveT_ -= dt;
+            if (waveT_ <= 0) {
                 wave_++;
-                waveT_ = 6.6f;
-            } else {
-                bool anyAlive = false;
-                for (auto& e : enemies_)
-                    if (e.alive) anyAlive = true;
-                if (!anyAlive) {
-                    state_ = WorldState::StormShift;
+                if (wave_ >= kWaveCount) {
+                    state_ = WorldState::Cleared;
                     stateT_ = 0;
-                    banner_ = "雷暴到达";
-                    bannerT_ = 2.0f;
-                    audio::play(audio::SfxWarn, 0.8f, 1.0f);
+                    audio::play(audio::SfxUiSelect, 0.9f, 0.9f);
+                } else {
+                    wavePhase_ = WP_Banner;
+                    waveT_ = 1.5f;
+                    showBanner((wave_ == kWaveCount - 1) ? "FINAL WAVE" : ("WAVE " + std::to_string(wave_ + 1)), 1.5f);
                 }
             }
-        }
+            break;
     }
 }
 
@@ -728,53 +1204,26 @@ void World::update(float dt, bool autopilot) {
     }
     if (shake_ > 0) shake_ -= dt * 2.4f;
     if (flash_ > 0) flash_ -= dt * 2.2f;
-    if (invuln_ > 0) invuln_ -= dt;
 
-    bg_.setSpeed(state_ == WorldState::Boss ? 300.0f : 230.0f);
+    bg_.setSpeed((wave_ >= kWaveCount - 1) ? 300.0f : 230.0f);
     bg_.update(dt);
     bgStorm_.setSpeed(340.0f);
     bgStorm_.update(dt);
 
-    if (state_ == WorldState::Playing || state_ == WorldState::Boss) {
-        if (state_ != WorldState::Failed) updatePlayer(dt, autopilot);
-    } else if (state_ == WorldState::Failed) {
-        updatePlayer(dt, autopilot);
-    }
+    // 终局：雷暴压上来
+    float stormTarget = (wave_ >= kWaveCount - 1 && state_ == WorldState::Playing) ? 1.0f : stormMix_;
+    stormMix_ = approach(stormMix_, stormTarget, dt * 0.55f);
+
+    updatePlayer(dt, autopilot);
 
     updateBullets(dt);
     updateEnemies(dt);
     updateBoss(dt);
     updateParticles(dt);
     updatePickups(dt);
-    updateSpawner(dt);
+    updateWave(dt);
 
-    if (state_ == WorldState::StormShift) {
-        stormMix_ = clampf(stateT_ / 2.6f, 0, 1);
-        if (stateT_ > 3.2f) {
-            state_ = WorldState::Warning;
-            stateT_ = 0;
-            banner_ = "";
-            audio::play(audio::SfxWarn, 1.0f, 0.9f);
-        }
-    } else if (state_ == WorldState::Warning) {
-        stormMix_ = 1.0f;
-        if (stateT_ > 2.4f) {
-            state_ = WorldState::Boss;
-            stateT_ = 0;
-            boss_ = Enemy{};
-            boss_.alive = true;
-            boss_.maxHp = boss_.hp = 1400.0f;
-            boss_.pos = {VW + 420, 520};
-            boss_.t = 0;
-            boss_.fireT = 2.0f;
-            pose::Reset(boss_.pose, pose::kEnemy);
-            boss_.lastY = 520;
-            bossEnter_ = 0;
-            banner_ = "IRON FORTRESS";
-            bannerT_ = 2.4f;
-        }
-    } else if (state_ == WorldState::Cleared) {
-        stormMix_ = 1.0f;
+    if (state_ == WorldState::Cleared) {
         if (stateT_ > 2.6f && !finished_) finished_ = true;
     } else if (state_ == WorldState::Failed) {
         if (stateT_ > 1.6f && !finished_) finished_ = true;
@@ -783,7 +1232,6 @@ void World::update(float dt, bool autopilot) {
 
 // ---------------------------------------------------------------- 绘制
 void World::drawShadow(Vector2 pos, float w, float h, float alpha) {
-    // 机体在倾斜正交相机下投影到海面的椭圆阴影（侧视角下贴近机体下方）
     float sx = pos.x + 10, sy = pos.y + 46;
     for (int i = 3; i >= 1; i--) {
         float k = i / 3.0f;
@@ -805,12 +1253,12 @@ void World::drawBackground() {
     }
     rlPopMatrix();
 
-    // 地面阴影
     rlPushMatrix();
     rlTranslatef(sh.x, sh.y, 0);
     for (auto& e : enemies_) {
-        if (!e.alive) continue;
-        drawShadow(e.pos, kEnemy[e.type].span * e.scale * 0.75f, kEnemy[e.type].span * e.scale * 0.3f, 0.9f);
+        if (!e.alive || e.delay > 0) continue;
+        float span = EnemySpan(e);
+        drawShadow(e.pos, span * 0.75f, span * 0.3f, 0.9f);
     }
     if (boss_.alive) drawShadow(boss_.pos, 620, 240, 1.0f);
     if (playerDeathT_ <= 0) drawShadow(player_, kPlayerSpan * 0.75f, kPlayerSpan * 0.3f, 1.0f);
@@ -821,54 +1269,137 @@ void World::draw3D() {
     Vector2 sh = shakeOffset();
     float px = player_.x + sh.x, py = player_.y + sh.y;
 
-    // 玩家（无敌时闪烁）
+    // 闪身残影
+    for (auto& g : ghosts_) {
+        float k = clampf(g.life / g.maxLife, 0, 1);
+        assets::drawCraft(assets::players[save::data().craft], g.pos.x + sh.x, g.pos.y + sh.y, save::data().skin,
+                          g.pose, kPlayerSpan, WithAlpha(pal::kCyan, 0.30f * k), 1);
+    }
+
     if (playerDeathT_ <= 0) {
         bool blink = (invuln_ > 0) && (((int)(GetTime() * 14)) % 2 == 0);
         Color tint = blink ? WithAlpha(WHITE, 0.45f) : WHITE;
-        assets::drawCraft(assets::players[save::data().craft], px, py, save::data().skin, playerPose_,
-                          kPlayerSpan, tint, 1);
+        assets::drawCraft(assets::players[save::data().craft], px, py, save::data().skin, playerPose_, kPlayerSpan,
+                          tint, 1);
     }
 
     for (auto& e : enemies_) {
-        if (!e.alive) continue;
-        float span = kEnemy[e.type].span * e.scale;
+        if (!e.alive || e.delay > 0) continue;
+        float span = EnemySpan(e);
         Color tint = e.hitFlash > 0 ? Color{255, 235, 220, 255} : WHITE;
-        assets::drawCraft(assets::enemies[e.type], e.pos.x + sh.x, e.pos.y + sh.y, assets::SKIN_RED, e.pose,
-                          span, tint, -1);
+        float jx = 0, jy = 0;
+        if (e.st == ES_Charge) {
+            float p = clampf(e.stateT / kChargeTime, 0, 1);
+            float amp = 2.0f + 7.0f * p;
+            jx = std::sin(e.t * 62.0f) * amp;
+            jy = std::cos(e.t * 74.0f) * amp;
+        }
+        assets::drawCraft(assets::enemies[kEnemy[e.cls].craft], e.pos.x + sh.x + jx, e.pos.y + sh.y + jy,
+                          assets::SKIN_RED, e.pose, span, tint, -1);
     }
+
     if (boss_.alive) {
         Color tint = boss_.hitFlash > 0 ? Color{255, 230, 210, 255} : WHITE;
-        assets::drawCraft(assets::boss, boss_.pos.x + sh.x, boss_.pos.y + sh.y, assets::SKIN_RED, boss_.pose,
+        float jx = 0, jy = 0;
+        if (boss_.st == ES_Charge) {
+            float p = clampf(boss_.stateT / kBossChargeTime, 0, 1);
+            float amp = 3.0f + 9.0f * p;
+            jx = std::sin(boss_.t * 58.0f) * amp;
+            jy = std::cos(boss_.t * 70.0f) * amp;
+        }
+        assets::drawCraft(assets::boss, boss_.pos.x + sh.x + jx, boss_.pos.y + sh.y + jy, assets::SKIN_RED, boss_.pose,
                           620.0f, tint, -1);
     }
 }
 
+// 冲锋 / 冲撞的预警：危险走廊 + 收缩圆环 + 警示牌
+void World::drawTelegraphs() {
+    float now = (float)GetTime();
+    for (auto& e : enemies_) {
+        if (!e.alive || e.st != ES_Charge) continue;
+        float p = clampf(e.stateT / kChargeTime, 0, 1);
+        float a = 0.6f + 0.4f * (0.5f + 0.5f * std::sin(now * 26.0f));
+        float span = EnemySpan(e);
+
+        DrawAimLine(e.pos, e.lockDir, pal::kDanger, 0.85f + 0.15f * p);
+
+
+        // 机体上的红色锁定光晕
+        DrawCircleV(e.pos, span * 0.52f, WithAlpha(pal::kDanger, 0.08f + 0.12f * p));
+        for (int i = 0; i < 4; i++)
+            DrawCircleLines((int)e.pos.x, (int)e.pos.y, (int)(span * 0.52f) + i * 3,
+                            WithAlpha(pal::kDanger, (0.5f + 0.4f * a) * (1.0f - i * 0.2f)));
+
+        // 收缩的蓄力环
+        float ring = lerpf(320.0f, 96.0f, p);
+        for (int i = 0; i < 3; i++)
+            DrawCircleLines((int)e.pos.x, (int)e.pos.y, (int)ring + i * 2, WithAlpha(pal::kDanger, 0.45f + 0.4f * a));
+
+        // 预警三角 + 锁定文字
+        float ty = e.pos.y - span * 0.52f - 78.0f;
+        if (ty < 96.0f) ty = e.pos.y + span * 0.52f + 78.0f;
+        DrawWarnMark(e.pos.x, ty, 34.0f, a);
+        ui::TextC("锁定", e.pos.x, ty - 62.0f, 26, WithAlpha(pal::kDanger, a), true);
+    }
+
+    if (boss_.alive && boss_.st == ES_Charge) {
+        float p = clampf(boss_.stateT / kBossChargeTime, 0, 1);
+        float a = 0.6f + 0.4f * (0.5f + 0.5f * std::sin(now * 24.0f));
+        DrawAimLine(boss_.pos, boss_.lockDir, pal::kDanger, 0.8f + 0.2f * p);
+        float ring = lerpf(520.0f, 230.0f, p);
+        DrawCircleLines((int)boss_.pos.x, (int)boss_.pos.y, ring, WithAlpha(pal::kDanger, 0.3f + 0.4f * p));
+        DrawCircleLines((int)boss_.pos.x, (int)boss_.pos.y, ring * 0.7f, WithAlpha(pal::kDanger, 0.16f + 0.28f * p));
+        DrawWarnMark(boss_.pos.x, boss_.pos.y - 300.0f, 42.0f, a);
+        ui::TextC("锁定", boss_.pos.x, boss_.pos.y - 372.0f, 30, WithAlpha(pal::kDanger, a), true);
+    }
+
+    // 大炮弹的开火预告：枪口聚能
+    for (auto& e : enemies_) {
+        if (!e.alive || e.tell <= 0) continue;
+        float k = 1.0f - clampf(e.tell / 0.55f, 0, 1);
+        float r = 18.0f + 46.0f * k;
+        DrawCircleV({e.pos.x - 46, e.pos.y}, r, WithAlpha(Color{255, 120, 40, 255}, 0.18f + 0.25f * k));
+        DrawCircleLines((int)(e.pos.x - 46), (int)e.pos.y, r, WithAlpha(pal::kGold, 0.5f + 0.5f * k));
+    }
+    if (boss_.alive && boss_.tell > 0) {
+        float k = 1.0f - clampf(boss_.tell / 0.6f, 0, 1);
+        float r = 26.0f + 70.0f * k;
+        DrawCircleV({boss_.pos.x - 130, boss_.pos.y + 10}, r, WithAlpha(Color{255, 120, 40, 255}, 0.18f + 0.28f * k));
+        DrawCircleLines((int)(boss_.pos.x - 130), (int)(boss_.pos.y + 10), r, WithAlpha(pal::kGold, 0.5f + 0.5f * k));
+    }
+}
+
 void World::drawBullets() {
-    // 第一层：加法混合的柔光，让弹幕在亮色海面上也能看清
     BeginBlendMode(BLEND_ADDITIVE);
     for (auto& b : bullets_) {
         if (!b.alive) continue;
-        if (b.vel.x > 0) {
+        if (!b.hostile) {
             DrawCircle((int)(b.pos.x + 2), (int)b.pos.y, 16.0f, WithAlpha(Color{80, 200, 255, 255}, 0.28f));
             DrawRectangleGradientH((int)(b.pos.x - 96), (int)(b.pos.y - 9), 104, 18,
                                    WithAlpha(Color{40, 150, 220, 255}, 0.0f),
                                    WithAlpha(Color{120, 230, 255, 255}, 0.32f));
         } else {
-            DrawCircle((int)b.pos.x, (int)b.pos.y, b.r * 2.6f, WithAlpha(b.col, 0.3f));
+            DrawCircle((int)b.pos.x, (int)b.pos.y, b.r * 2.6f, WithAlpha(b.col, b.big ? 0.42f : 0.3f));
         }
     }
     EndBlendMode();
 
-    // 第二层：实体
     for (auto& b : bullets_) {
         if (!b.alive) continue;
-        if (b.vel.x > 0) {
+        if (!b.hostile) {
             DrawRectangleGradientH((int)(b.pos.x - 70), (int)(b.pos.y - 5), 78, 10,
                                    WithAlpha(Color{110, 225, 255, 255}, 0.0f), Color{150, 240, 255, 255});
             DrawRectangle((int)(b.pos.x - 18), (int)(b.pos.y - 3), 26, 6, Color{236, 255, 255, 255});
             DrawCircle((int)(b.pos.x + 6), (int)b.pos.y, 6.0f, Color{245, 255, 255, 255});
+        } else if (b.big) {
+            // 大炮弹：黑边 + 熔岩内核 + 外圈脉冲
+            float pulse = 1.0f + 0.06f * std::sin((float)GetTime() * 18.0f + b.pos.x);
+            DrawCircle((int)b.pos.x, (int)b.pos.y, b.r * 1.12f * pulse, WithAlpha(Color{28, 6, 8, 255}, 0.75f));
+            DrawCircle((int)b.pos.x, (int)b.pos.y, b.r * pulse, Color{255, 118, 36, 255});
+            DrawCircle((int)b.pos.x, (int)b.pos.y, b.r * 0.72f, Color{255, 186, 76, 255});
+            DrawCircle((int)b.pos.x, (int)b.pos.y, b.r * 0.38f, Color{255, 248, 224, 255});
+            DrawCircleLines((int)b.pos.x, (int)b.pos.y, b.r * 1.35f * pulse, WithAlpha(pal::kDanger, 0.55f));
         } else {
-            // 深色描边 + 小亮芯：远看是实心暖色弹，近看有立体感
             DrawCircle((int)b.pos.x, (int)b.pos.y, b.r + 4.0f, WithAlpha(Color{32, 8, 10, 255}, 0.62f));
             DrawCircle((int)b.pos.x, (int)b.pos.y, b.r, b.col);
             DrawCircle((int)(b.pos.x - b.r * 0.18f), (int)(b.pos.y - b.r * 0.2f), b.r * 0.34f,
@@ -905,74 +1436,144 @@ void World::drawPickups() {
     }
 }
 
+// 敌机血条：贴在机体上方，白条滞后表现这一击掉了多少
+void World::drawEnemyBars() {
+    for (auto& e : enemies_) {
+        if (!e.alive || e.delay > 0) continue;
+        if (e.pos.x > VW + 120 || e.pos.x < -120) continue;
+        float span = EnemySpan(e);
+        float w = clampf(span * 0.52f, 74.0f, 156.0f);
+        float h = 9.0f;
+        float x = e.pos.x - w * 0.5f;
+        float y = e.pos.y - span * 0.34f - 30.0f;
+        if (y < 24.0f) y = e.pos.y + span * 0.30f + 18.0f;  // 贴顶时改画在机体下方
+        float r = clampf(e.hp / e.maxHp, 0, 1);
+        Color c = EnemyBarColor(e.cls);
+
+        DrawRectangle((int)(x - 3), (int)(y - 3), (int)(w + 6), (int)(h + 6), WithAlpha(BLACK, 0.5f));
+        DrawRectangle((int)x, (int)y, (int)w, (int)h, WithAlpha(Color{34, 44, 58, 255}, 0.92f));
+        if (e.hpTrail > r)
+            DrawRectangle((int)x, (int)y, (int)(w * e.hpTrail), (int)h, WithAlpha(Color{255, 250, 240, 255}, 0.4f));
+        DrawRectangle((int)x, (int)y, (int)(w * r), (int)h, c);
+        DrawRectangle((int)x, (int)y, (int)(w * r), 3, WithAlpha(WHITE, 0.55f));
+        DrawRectangleLinesEx({x - 1.5f, y - 1.5f, w + 3, h + 3}, 1.5f, WithAlpha(c, 0.7f));
+    }
+}
+
 void World::drawFore() {
-    // 命中点标记：贴图中心的青色小点，帮助玩家判断判定框
+    // 命中点标记
     if (playerDeathT_ <= 0) {
         float a = (invuln_ > 0) ? 0.25f : 0.55f;
         DrawCircle((int)player_.x, (int)player_.y, 13.0f, WithAlpha(pal::kCyan, a * 0.35f));
         DrawCircle((int)player_.x, (int)player_.y, 4.0f, WithAlpha(Color{240, 255, 255, 255}, a + 0.3f));
     }
+
+    // 闪身拖影（2D 速度线）
+    if (dashT_ > 0) {
+        for (int i = 0; i < 5; i++) {
+            float oy = (i - 2) * 34.0f;
+            Vector2 a{player_.x - dashDir_.x * 150.0f, player_.y - dashDir_.y * 150.0f + oy};
+            Vector2 b{player_.x - dashDir_.x * 30.0f, player_.y - dashDir_.y * 30.0f + oy};
+            ThickLine(a, b, 4.0f, WithAlpha(pal::kCyan, 0.3f));
+        }
+    }
+
     drawParticles();
+    drawTelegraphs();
     drawBullets();
     drawPickups();
+    drawEnemyBars();
+
     if (bombFlash_ > 0) {
-        DrawCircle((int)player_.x, (int)player_.y, 900.0f * (1.0f - bombFlash_ / 0.9f), WithAlpha(Color{180, 240, 255, 255}, bombFlash_ * 0.5f));
+        DrawCircle((int)player_.x, (int)player_.y, 900.0f * (1.0f - bombFlash_ / 0.9f),
+                   WithAlpha(Color{180, 240, 255, 255}, bombFlash_ * 0.5f));
     }
 }
 
 void World::drawHud() {
-    // 顶部/底部压暗，保证 HUD 在亮天空上可读
-    DrawRectangleGradientV(0, 0, (int)VW, 210, WithAlpha(BLACK, 0.42f), BLANK);
+    DrawRectangleGradientV(0, 0, (int)VW, 250, WithAlpha(BLACK, 0.55f), BLANK);
     DrawRectangleGradientV(0, (int)(VH - 170), (int)VW, 170, BLANK, WithAlpha(BLACK, 0.38f));
+    // 右上 / 左下 HUD 的底色块：云层太亮，纯文字读不清
+    DrawRectangleGradientH((int)(VW - 520), 0, 520, 200, BLANK, WithAlpha(BLACK, 0.42f));
+    DrawRectangleGradientH(0, (int)(VH - 150), 300, 150, WithAlpha(BLACK, 0.42f), BLANK);
 
-    // 分数
-    ui::Text("SCORE", 48, 30, 22, WithAlpha(pal::kCyan, 0.95f), true);
     char buf[64];
+
+    // ---- 分数
+    ui::Text("SCORE", 48, 30, 22, WithAlpha(pal::kCyan, 0.95f), true);
     snprintf(buf, sizeof buf, "%07d", score_);
     ui::TextShadow(buf, 46, 58, 52, pal::kText, WithAlpha(BLACK, 0.55f), true);
-
     snprintf(buf, sizeof buf, "HI %07d", std::max(save::data().hiScore, score_));
     ui::TextShadow(buf, 48, 122, 22, WithAlpha(pal::kDim, 0.95f), WithAlpha(BLACK, 0.5f));
-
     if (combo_ > 1) {
         float pop = comboT_ > 2.3f ? 1.0f + (comboT_ - 2.3f) * 0.9f : 1.0f;
         snprintf(buf, sizeof buf, "COMBO x%d", combo_);
         ui::TextShadow(buf, 48, 160, (int)(26 * pop), pal::kGold, WithAlpha(BLACK, 0.5f), true);
     }
 
-    // 生命 / 爆弹
+    // ---- 装甲（玩家血量）
     float rx = VW - 60;
-    ui::TextR("生命", rx - 118, 34, 20, WithAlpha(pal::kDim, 0.9f));
-    for (int i = 0; i < 5; i++) {
-        if (i >= lives_) break;
-        float cx = rx - 26 - i * 34, cy = 46;
-        // 小飞机图标
-        DrawTriangle({cx, cy - 13}, {cx - 13, cy + 10}, {cx + 13, cy + 10}, pal::kCyan);
-        DrawTriangle({cx, cy + 15}, {cx - 7, cy + 2}, {cx + 7, cy + 2}, WithAlpha(pal::kCyan, 0.85f));
-    }
-    ui::TextR("爆弹", rx - 118, 84, 20, WithAlpha(pal::kDim, 0.9f));
+    float barW = 320;
+    float bx = rx - barW;
+    float ratio = hp01();
+    Color hpCol = ratio > 0.6f ? pal::kCyan : (ratio > 0.3f ? pal::kGold : pal::kDanger);
+
+    Rectangle hudPanel{bx - 26, 10, barW + 52, 182};
+    ui::Panel(hudPanel, WithAlpha(pal::kPanelBg, 0.55f), WithAlpha(pal::kCyan, 0.22f), 12, 1.5f);
+
+    ui::TextShadow("装甲", bx, 24, 20, WithAlpha(pal::kText, 0.85f), WithAlpha(BLACK, 0.6f));
+    snprintf(buf, sizeof buf, "%d", (int)std::ceil(hp_));
+    ui::TextR(buf, rx, 20, 26, WithAlpha(hpCol, 0.95f), true);
+    DrawRectangle((int)bx - 3, (int)54 - 3, (int)barW + 6, 26, WithAlpha(BLACK, 0.55f));
+    SegBar(bx, 54, barW, 20, ratio, 20, hpCol, WithAlpha(Color{40, 52, 66, 255}, 0.85f));
+    DrawRectangle((int)bx, (int)54, (int)(barW * ratio), 4, WithAlpha(WHITE, 0.35f));
+
+    // ---- 爆弹
+    ui::TextShadow("爆弹", bx, 90, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.6f));
     for (int i = 0; i < bombs_; i++) {
-        float cx = rx - 26 - i * 30, cy = 100;
+        float cx = rx - 12 - i * 30, cy = 102;
         DrawCircle((int)cx, (int)(cy + 4), 10, pal::kGold);
         DrawRectangle((int)cx - 3, (int)cy - 16, 6, 10, WithAlpha(pal::kGold, 0.9f));
         DrawCircle((int)cx, (int)cy - 16, 3, WithAlpha(Color{255, 240, 200, 255}, 0.9f));
     }
 
-    // 波次进度
-    float bw = 18, gap = 6;
-    float totalW = waveCount_ * (bw + gap) - gap;
-    float bx = VW - 48 - totalW, by = VH - 74;
-    ui::TextR("进度", bx - 22, by + 2, 20, WithAlpha(pal::kDim, 0.9f));
-    for (int i = 0; i < waveCount_; i++) {
-        Color c = (i < wave_) ? pal::kCyan : WithAlpha(WHITE, 0.16f);
-        DrawRectangle((int)(bx + i * (bw + gap)), (int)by, (int)bw, 26, c);
-        if (i < wave_) DrawRectangle((int)(bx + i * (bw + gap)), (int)by, (int)bw, 6, WithAlpha(WHITE, 0.55f));
+    // ---- 闪身冷却
+    float dr = dashReady01();
+    ui::TextShadow("闪避", bx, 128, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.6f));
+    if (dr >= 0.999f) {
+        float p = ui::Pulse(2.4f);
+        ui::TextR("就绪", rx, 128, 18, WithAlpha(pal::kCyan, 0.55f + 0.45f * p), true);
+    }
+    DrawRectangle((int)bx, (int)158, (int)barW, 8, WithAlpha(Color{34, 44, 58, 255}, 0.9f));
+    DrawRectangle((int)bx, (int)158, (int)(barW * dr), 8, WithAlpha(dr >= 0.999f ? pal::kCyan : pal::kDim, 0.95f));
+
+    // ---- 剩余敌机（左下）
+    int left = enemiesLeft();
+    ui::TextShadow("敌机", 48, VH - 100, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.65f));
+    snprintf(buf, sizeof buf, "%02d", left);
+    ui::TextShadow(buf, 46, VH - 76, 44, left > 0 ? pal::kText : WithAlpha(pal::kCyan, 0.9f), WithAlpha(BLACK, 0.6f),
+                   true);
+
+    // ---- 波次进度（右下，5 格）
+    float bw = 44, gap = 8;
+    float totalW = kWaveCount * (bw + gap) - gap;
+    float px = VW - 48 - totalW, py = VH - 76;
+    ui::TextShadow("进度", px - 22 - ui::TextW("进度", 20), py + 4, 20, WithAlpha(pal::kText, 0.75f),
+                   WithAlpha(BLACK, 0.6f));
+    for (int i = 0; i < kWaveCount; i++) {
+        bool done = (i < wave_) || (i == wave_ && wavePhase_ == WP_Gap);
+        bool cur = (i == wave_) && !done;
+        Color c = done ? pal::kCyan : (cur ? WithAlpha(pal::kCyan, 0.45f) : WithAlpha(WHITE, 0.14f));
+        DrawRectangle((int)(px + i * (bw + gap)), (int)py, (int)bw, 26, c);
+        if (done) DrawRectangle((int)(px + i * (bw + gap)), (int)py, (int)bw, 6, WithAlpha(WHITE, 0.55f));
+        if (cur) DrawRectangleLinesEx({px + i * (bw + gap), py, bw, 26}, 2, WithAlpha(pal::kCyan, 0.85f));
     }
 
-    // 波次横幅
+    // ---- 波次横幅
     if (bannerT_ > 0 && !banner_.empty()) {
-        float a = clampf(bannerT_ / 0.45f, 0, 1) * clampf((1.6f - bannerT_) * 4.0f, 0, 1);
-        float y = 300 + (1.0f - clampf((1.6f - bannerT_) * 3.0f, 0, 1)) * 34;
+        float t = 1.0f - bannerT_ / std::max(bannerDur_, 0.01f);
+        float a = clampf(bannerT_ / 0.4f, 0, 1) * clampf(t * 6.0f, 0, 1);
+        float y = 300 + (1.0f - clampf(t * 4.0f, 0, 1)) * 34;
         float w = ui::TextW(banner_, 64, true) + 160;
         ui::Panel({VW * 0.5f - w * 0.5f, y - 22, w, 104}, WithAlpha(pal::kPanelBg, 0.72f * a),
                   WithAlpha(pal::kCyan, 0.75f * a), 10, 2);
@@ -981,27 +1582,37 @@ void World::drawHud() {
                       WithAlpha(pal::kCyan, 0.4f * a));
     }
 
-    // Boss 血条
-    if (state_ == WorldState::Boss || (state_ == WorldState::Cleared && stateT_ < 2.2f)) {
+    // ---- Boss 血条
+    if (boss_.alive) {
         float w = 1120, x = VW * 0.5f - w * 0.5f, y = 40;
+        float r = bossHp01();
         DrawRectangle((int)x - 4, (int)y - 4, (int)w + 8, 34, WithAlpha(BLACK, 0.6f));
-        DrawRectangle((int)x, (int)y, (int)(w * bossHp01()), 26, Color{255, 86, 70, 255});
-        DrawRectangle((int)x, (int)y, (int)(w * bossHp01()), 9, Color{255, 168, 140, 255});
+        DrawRectangle((int)x, (int)y, (int)w, 26, WithAlpha(Color{40, 20, 24, 255}, 0.85f));
+        if (boss_.hpTrail > r)
+            DrawRectangle((int)x, (int)y, (int)(w * boss_.hpTrail), 26, WithAlpha(Color{255, 244, 232, 255}, 0.42f));
+        DrawRectangle((int)x, (int)y, (int)(w * r), 26, Color{255, 86, 70, 255});
+        DrawRectangle((int)x, (int)y, (int)(w * r), 9, Color{255, 168, 140, 255});
         DrawRectangleLinesEx({x, y, w, 26}, 2, WithAlpha(pal::kDanger, 0.9f));
         ui::TextC("IRON FORTRESS", VW * 0.5f, y + 40, 26, WithAlpha(pal::kText, 0.9f), true);
     }
 
-    // 警告
-    if (state_ == WorldState::Warning) {
-        float p = ui::Pulse(2.2f);
-        float a = 0.35f + 0.45f * p;
-        for (int i = 0; i < 4; i++) {
-            float t = 0.5f - i * 0.11f;
-            DrawRectangleLinesEx({0, 0, VW, VH}, 26 - i * 5, WithAlpha(pal::kDanger, a * t * 0.6f));
+    // ---- 危险提示：有敌机在蓄力冲锋时，屏幕边缘泛红
+    float danger = 0;
+    for (auto& e : enemies_)
+        if (e.alive && e.st == ES_Charge) danger = std::max(danger, clampf(e.stateT / kChargeTime, 0, 1));
+    if (boss_.alive && boss_.st == ES_Charge) danger = 1.0f;
+    if (danger > 0) {
+        float p = 0.5f + 0.5f * std::sin((float)GetTime() * 16.0f);
+        for (int i = 0; i < 3; i++) {
+            float t = 0.45f - i * 0.13f;
+            DrawRectangleLinesEx({0, 0, VW, VH}, 30 - i * 9, WithAlpha(pal::kDanger, t * danger * (0.45f + 0.4f * p)));
         }
-        ui::TextShadow("警  告", VW * 0.5f - ui::TextW("警  告", 120, true) * 0.5f, 380, 120,
-                       WithAlpha(pal::kDanger, 0.75f + 0.25f * p), WithAlpha(BLACK, 0.6f), true);
-        ui::TextC("雷暴要塞到达", VW * 0.5f, 540, 40, WithAlpha(pal::kText, 0.9f), true);
+        // 操作提示：教玩家用闪避脱离锁定线
+        const char* hint = "SHIFT + 方向    闪避";
+        float hw = ui::TextW(hint, 30, true) + 60;
+        ui::Panel({VW * 0.5f - hw * 0.5f, VH - 168, hw, 62}, WithAlpha(pal::kPanelBg, 0.72f * danger),
+                  WithAlpha(pal::kDanger, 0.6f * danger), 10, 2);
+        ui::TextC(hint, VW * 0.5f, VH - 152, 30, WithAlpha(pal::kText, 0.55f + 0.45f * p), true);
     }
 
     if (flash_ > 0 && !app().optReduceFlash)
