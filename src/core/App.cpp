@@ -61,6 +61,8 @@ bool App::init(int argc, char** argv) {
         };
         if (const char* v = val("--shot=")) shotPath = v;
         else if (const char* v = val("--frames=")) shotFrames = atoi(v);
+        else if (const char* v = val("--seq=")) { seqDir = v; seqLeft = 9999; }
+        else if (const char* v = val("--seqn=")) seqLeft = atoi(v);
         else if (const char* v = val("--warp=")) warpTime = (float)atof(v);
         else if (const char* v = val("--screen=")) {
             std::string s = v;
@@ -105,8 +107,8 @@ bool App::init(int argc, char** argv) {
     SetExitKey(KEY_NULL);
     SetTargetFPS(60);
 
-    winW = GetScreenWidth();
-    winH = GetScreenHeight();
+    winW = GetRenderWidth();
+    winH = GetRenderHeight();
     updateCanvas();
 
     Image icon = LoadImage("assets/logo/logo_sky_striker.png");
@@ -140,23 +142,25 @@ bool App::init(int argc, char** argv) {
 }
 
 void App::updateCanvas() {
-    int w = GetScreenWidth(), h = GetScreenHeight();
-    if (w <= 0 || h <= 0) return;
-    float s = std::min(w / VW, h / VH);
+    // 注意：这里必须用"渲染尺寸"（物理像素）而不是 GetScreenWidth()（逻辑尺寸）。
+    // 在 125%/150% 缩放的显示器上两者不等，按逻辑尺寸分配画布会让整帧被放大
+    // 1.25 倍再呈现，UI 的 1~2px 描边会被插值成一团糊，看起来就是在闪。
+    int sw = GetScreenWidth(), sh = GetScreenHeight();
+    int rw = GetRenderWidth(), rh = GetRenderHeight();
+    if (sw <= 0 || sh <= 0 || rw <= 0 || rh <= 0) return;
+    dpi = (float)rw / (float)sw;
+
+    float s = std::min(rw / VW, rh / VH);
     s = clampf(s, 0.35f, 2.0f);
-    int cw = (int)(VW * s), ch = (int)(VH * s);
-    if (canvas.id != 0 && canvas.texture.width == cw && canvas.texture.height == ch) {
-        scale = s;
-        size = {(float)cw, (float)ch};
-        origin = {std::floor((w - cw) * 0.5f), std::floor((h - ch) * 0.5f)};
-        return;
-    }
-    if (canvas.id != 0) UnloadRenderTexture(canvas);
-    canvas = LoadRenderTexture(cw, ch);
-    SetTextureFilter(canvas.texture, TEXTURE_FILTER_BILINEAR);
+    int cw = (int)std::round(VW * s), ch = (int)std::round(VH * s);
     scale = s;
     size = {(float)cw, (float)ch};
-    origin = {std::floor((w - cw) * 0.5f), std::floor((h - ch) * 0.5f)};
+    origin = {std::floor((rw - cw) * 0.5f), std::floor((rh - ch) * 0.5f)};
+    if (canvas.id != 0 && canvas.texture.width == cw && canvas.texture.height == ch) return;
+    if (canvas.id != 0) UnloadRenderTexture(canvas);
+    canvas = LoadRenderTexture(cw, ch);
+    // 1:1 贴图，任何插值都只会让边缘变糊
+    SetTextureFilter(canvas.texture, TEXTURE_FILTER_POINT);
 }
 
 void App::beginCanvas() {
@@ -181,23 +185,36 @@ void App::endCanvas() {
     BeginDrawing();
     ClearBackground(BLACK);
     Rectangle src{0, 0, (float)canvas.texture.width, -(float)canvas.texture.height};
-    Rectangle dst{origin.x, origin.y, size.x, size.y};
+    // origin/size 是物理像素，这里换算回 2D 逻辑坐标（raylib 的 2D 空间按逻辑尺寸铺）
+    Rectangle dst{origin.x / dpi, origin.y / dpi, size.x / dpi, size.y / dpi};
     DrawTexturePro(canvas.texture, src, dst, {0, 0}, 0.0f, WHITE);
+    if (!seqDir.empty() && seqLeft > 0) {
+        rlDrawRenderBatchActive();  // 先把批次刷进帧缓冲，否则读到黑屏
+        Image img = LoadImageFromScreen();
+        char p[512];
+        snprintf(p, sizeof p, "%s/f%04d.png", seqDir.c_str(), seqIndex++);
+        ExportImage(img, p);
+        UnloadImage(img);
+        seqLeft--;
+    }
     EndDrawing();
 }
 
 void App::updateInput() {
-    int w = GetScreenWidth(), h = GetScreenHeight();
+    // 用物理尺寸判断是否变化：跨屏拖动时逻辑尺寸可能不变，但 DPI 变了
+    int w = GetRenderWidth(), h = GetRenderHeight();
     if (w != winW || h != winH) {
         winW = w;
         winH = h;
         updateCanvas();
     }
 
-    Vector2 m = GetMousePosition();
-    in.mouse = {(m.x - origin.x) / scale, (m.y - origin.y) / scale};
+    Vector2 m = GetMousePosition();  // 逻辑坐标
+    // 鼠标：逻辑 → 物理 → 画布像素 → 逻辑游戏坐标
+    Vector2 mp{m.x * dpi, m.y * dpi};
+    in.mouse = {(mp.x - origin.x) / scale, (mp.y - origin.y) / scale};
     Vector2 d = GetMouseDelta();
-    in.mouseDelta = {d.x / scale, d.y / scale};
+    in.mouseDelta = {d.x * dpi / scale, d.y * dpi / scale};
     in.mouseMoved = (std::fabs(d.x) + std::fabs(d.y)) > 0.5f;
     in.lmb = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
     in.lmbPressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
@@ -213,7 +230,11 @@ void App::updateInput() {
 void App::toggleFullscreen() {
     if (!IsWindowState(FLAG_WINDOW_UNDECORATED) && !IsWindowFullscreen()) {
         int m = GetCurrentMonitor();
-        SetWindowSize(GetMonitorWidth(m), GetMonitorHeight(m));
+        // SetWindowSize 吃的是逻辑尺寸，GetMonitorWidth 给的是物理像素：125% 缩放下
+        // 直接传会把窗口撑到屏幕外
+        float k = platform::DpiScale();
+        if (k <= 0.0f) k = 1.0f;
+        SetWindowSize((int)std::lround(GetMonitorWidth(m) / k), (int)std::lround(GetMonitorHeight(m) / k));
         if (!IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE)) {
             SetWindowState(FLAG_BORDERLESS_WINDOWED_MODE);
         }
@@ -223,8 +244,8 @@ void App::toggleFullscreen() {
         SetWindowSize((int)(1280 * platform::DpiScale()), (int)(720 * platform::DpiScale()));
         optFullscreen = false;
     }
-    winW = GetScreenWidth();
-    winH = GetScreenHeight();
+    winW = GetRenderWidth();
+    winH = GetRenderHeight();
     updateCanvas();
 }
 
@@ -355,6 +376,7 @@ void App::run() {
         drawTransition();
         end2D();
         endCanvas();
+        if (!seqDir.empty() && seqLeft <= 0) requestExit = true;
     }
 }
 

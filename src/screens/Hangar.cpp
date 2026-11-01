@@ -195,12 +195,12 @@ void HangarScreen::draw3D() {
 void HangarScreen::drawStatPanel() {
     const auto& c = assets::players[craft_];
     const Rectangle& r = kHangarPanel;
-    ui::Panel(r, WithAlpha(Color{6, 12, 22, 255}, 0.93f), WithAlpha(pal::kCyan, 0.6f), 14, 2);
+    ui::Panel(r, Color{6, 12, 22, 255}, WithAlpha(pal::kCyan, 0.6f), 14, 2);
     ui::Frame(r, WithAlpha(pal::kCyan, 0.28f), 14);
 
     ui::Text(c.id, r.x + 30, r.y + 26, 42, pal::kText, true);
     ui::Text(c.role, r.x + 30, r.y + 82, 24, pal::kCyan);
-    DrawRectangle((int)r.x + 30, (int)r.y + 122, (int)r.width - 60, 2, WithAlpha(pal::kCyan, 0.22f));
+    ui::Rect({r.x + 30, r.y + 122, r.width - 60, 2}, WithAlpha(pal::kCyan, 0.22f));
 
     for (int i = 0; i < 5; i++) {
         float y = r.y + 142 + i * 54;
@@ -215,19 +215,19 @@ void HangarScreen::drawStatPanel() {
     ui::Text(c.desc, r.x + 30, r.y + 424, 21, WithAlpha(pal::kDim, 0.95f));
 
     // 换色
-    DrawRectangle((int)r.x + 30, (int)r.y + 452, (int)r.width - 60, 1, WithAlpha(WHITE, 0.08f));
+    ui::Rect({r.x + 30, r.y + 452, r.width - 60, 1}, WithAlpha(WHITE, 0.08f));
     ui::Text("换色", r.x + 30, r.y + 484, 22, WithAlpha(pal::kDim, 0.9f));
     for (int i = 0; i < 4; i++) {
         Rectangle sr = SkinSwatchRect(i);
         bool hov = ui::Hover(sr);
         Color col = SkinColor(i);
-        DrawRectangle((int)sr.x, (int)sr.y, (int)sr.width, (int)sr.height, WithAlpha(col, hov ? 1.0f : 0.86f));
-        DrawRectangle((int)sr.x, (int)sr.y, (int)sr.width, 6, WithAlpha(WHITE, 0.16f));
+        ui::Rect(sr, WithAlpha(col, hov ? 1.0f : 0.86f));
+        ui::Rect({sr.x, sr.y, sr.width, 6}, WithAlpha(WHITE, 0.16f));
         if (skin_ == i) {
-            DrawRectangleLinesEx({sr.x - 4, sr.y - 4, sr.width + 8, sr.height + 8}, 3, pal::kCyan);
+            ui::PanelOutline({sr.x - 4, sr.y - 4, sr.width + 8, sr.height + 8}, pal::kCyan, 0, 3);
             ui::Triangle(sr.x + sr.width * 0.5f, sr.y + sr.height * 0.5f, 18, 1, Color{255, 255, 255, 235});
         } else if (hov) {
-            DrawRectangleLinesEx(sr, 2, WithAlpha(pal::kCyan, 0.55f));
+            ui::PanelOutline(sr, WithAlpha(pal::kCyan, 0.55f), 0, 2);
         }
         ui::TextC(kSkinTag[i], sr.x + sr.width * 0.5f, sr.y + sr.height + 7, 12, WithAlpha(pal::kDim, 0.8f));
     }
@@ -267,7 +267,7 @@ void HangarScreen::drawStrip() {
 void HangarScreen::drawResultPanel() {
     auto& d = lastResult();
     Rectangle r{90, 178, 700, 540};
-    ui::Panel(r, WithAlpha(pal::kPanelBg, 0.92f), WithAlpha(pal::kCyan, 0.6f), 14, 2);
+    ui::Panel(r, Color{6, 12, 22, 255}, WithAlpha(pal::kCyan, 0.6f), 14, 2);
     ui::Frame(r, WithAlpha(pal::kCyan, 0.3f), 14);
 
     ui::TextC(d.win ? "任务完成" : "任务失败", r.x + r.width * 0.5f, r.y + 34, 52,
@@ -292,7 +292,7 @@ void HangarScreen::drawResultPanel() {
     auto row = [&](const char* k, const char* v) {
         ui::Text(k, r.x + 70, y, 26, WithAlpha(pal::kDim, 0.9f));
         ui::TextR(v, r.x + r.width - 70, y, 26, pal::kText);
-        DrawRectangle((int)r.x + 70, (int)y + 40, (int)r.width - 140, 1, WithAlpha(WHITE, 0.06f));
+        ui::Rect({r.x + 70, y + 40, r.width - 140, 1}, WithAlpha(WHITE, 0.06f));
         y += 58;
     };
     snprintf(buf, sizeof buf, "%d", d.kills);

@@ -4,6 +4,11 @@
 
 namespace sky::ui {
 
+// 像素网格：把逻辑坐标对齐到画布像素，避免描边/文字落在半像素上（会闪）
+float     K();                    // 画布像素 / 逻辑像素
+float     Px(float v);            // 单个坐标对齐
+Rectangle Snap(Rectangle r);      // 四边对齐
+
 // 文字（左上锚点 / 水平居中 / 右对齐）
 void  Text(const std::string& s, float x, float y, int size, Color c, bool bold = false);
 void  TextC(const std::string& s, float cx, float y, int size, Color c, bool bold = false);
@@ -11,10 +16,11 @@ void  TextR(const std::string& s, float rx, float y, int size, Color c, bool bol
 float TextW(const std::string& s, int size, bool bold = false);
 void  TextShadow(const std::string& s, float x, float y, int size, Color c, Color shadow, bool bold = false);
 
-// 切角矩形（四角各切 c 像素）
+// 切角矩形（四角各切 c 像素）。描边画成等宽环，拐角不会叠加、不会缺口。
 void Panel(Rectangle r, Color fill, Color stroke, float chamfer = 8.0f, float thickness = 2.0f);
 void PanelOutline(Rectangle r, Color stroke, float chamfer = 8.0f, float thickness = 2.0f);
 void Frame(Rectangle r, Color c, float chamfer = 8.0f);  // 四角装饰线
+void Rect(Rectangle r, Color c);                          // 对齐像素网格的实心矩形
 
 // 三角形（▶ / ◀），dir = +1 右, -1 左
 void Triangle(float cx, float cy, float size, int dir, Color c);

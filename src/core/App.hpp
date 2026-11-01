@@ -87,9 +87,10 @@ public:
 
     // 画布
     RenderTexture2D canvas{};
+    float    dpi = 1.0f;        // 物理像素 / 逻辑像素（125% 缩放 = 1.25）
     float    scale = 1.0f;      // 逻辑 → 画布像素
-    Vector2  origin{0, 0};      // 画布在窗口中的左上角
-    Vector2  size{0, 0};        // 画布在窗口中的尺寸
+    Vector2  origin{0, 0};      // 画布在窗口中的左上角（物理像素）
+    Vector2  size{0, 0};        // 画布尺寸（物理像素）
     int      winW = 0, winH = 0;
 
     void beginCanvas();
@@ -111,6 +112,10 @@ public:
     // 命令行（截图/直达屏）
     std::string shotPath;
     int         shotFrames = 0;
+    // 调试：逐帧抓屏（真实呈现链路）
+    std::string seqDir;
+    int         seqLeft = 0;
+    int         seqIndex = 0;
     float       warpTime = 0.0f;
     Sid         startAt = Sid::Boot;
     bool        demoMode = false;

@@ -142,11 +142,11 @@ void PauseOverlay::update(float dt) {
 void PauseOverlay::draw() {
     ui::Dim(0.62f, Color{4, 8, 14, 255});
     Rectangle r{VW * 0.5f - 300, VH * 0.5f - 300, 600, 600};
-    ui::Panel(r, WithAlpha(pal::kPanelBg, 0.94f), WithAlpha(pal::kCyan, 0.65f), 14, 2);
+    ui::Panel(r, Color{6, 12, 22, 255}, WithAlpha(pal::kCyan, 0.65f), 14, 2);
     ui::Frame(r, WithAlpha(pal::kCyan, 0.3f), 14);
     ui::TextC("PAUSED", VW * 0.5f, r.y + 40, 52, pal::kText, true);
     ui::TextC("暂    停", VW * 0.5f, r.y + 104, 22, WithAlpha(pal::kDim, 0.75f));
-    DrawRectangle((int)r.x + 60, (int)r.y + 148, (int)r.width - 120, 2, WithAlpha(pal::kCyan, 0.2f));
+    ui::Rect({r.x + 60, r.y + 148, r.width - 120, 2}, WithAlpha(pal::kCyan, 0.2f));
 
     const char* items[5] = {"继    续", "选择战机", "设    置", "重开关卡", "返回主菜单"};
     float by = VH * 0.5f - 130;

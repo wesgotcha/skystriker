@@ -118,7 +118,9 @@ void TitleScreen::draw() {
         bool sel = (focus_ == i);
         bool enabled = !(i == 1 && !canContinue);
         float y = startY + i * lh;
-        float float_ = sel ? std::sin((float)GetTime() * 5.2f) * 4.0f : 0.0f;
+        // 浮动位移量化到整像素：亚像素位移会让 40px 的字和两侧三角每帧重采样一次，
+        // 看起来就是"字在抖"。像素游戏里按整像素跳反而更干净。
+        float float_ = sel ? std::round(std::sin((float)GetTime() * 5.2f) * 4.0f) : 0.0f;
         float tx = VW * 0.5f + float_;
         Color c = !enabled ? Color{96, 108, 122, 255} : (sel ? pal::kCyan : Color{186, 202, 218, 255});
         if (sel) {
@@ -167,7 +169,8 @@ void ConfirmOverlay::update(float dt) {
 void ConfirmOverlay::draw() {
     ui::Dim(0.62f, Color{4, 8, 14, 255});
     Rectangle r{VW * 0.5f - 280, VH * 0.5f - 150, 560, 300};
-    ui::Panel(r, WithAlpha(Color{6, 12, 22, 255}, 0.96f), WithAlpha(pal::kCyan, 0.7f), 12, 2);
+    // 弹窗用不透明底：半透明面板会把背后的动态画面透出来，边框跟着一起"呼吸"
+    ui::Panel(r, Color{6, 12, 22, 255}, WithAlpha(pal::kCyan, 0.7f), 12, 2);
     ui::Frame(r, WithAlpha(pal::kCyan, 0.35f), 12);
     ui::TextC(title_, VW * 0.5f, r.y + 52, 36, pal::kText, true);
     ui::TextC(body_, VW * 0.5f, r.y + 126, 24, WithAlpha(pal::kDim, 0.95f));
@@ -190,11 +193,11 @@ void RecordsOverlay::update(float dt) {
 void RecordsOverlay::draw() {
     ui::Dim(0.66f, Color{4, 8, 14, 255});
     Rectangle r{VW * 0.5f - 560, 130, 1120, 800};
-    ui::Panel(r, WithAlpha(pal::kPanelBg, 0.95f), WithAlpha(pal::kCyan, 0.6f), 14, 2);
+    ui::Panel(r, Color{6, 12, 22, 255}, WithAlpha(pal::kCyan, 0.6f), 14, 2);
     ui::Frame(r, WithAlpha(pal::kCyan, 0.3f), 14);
 
     ui::TextC("最 高 分 排 行", VW * 0.5f, r.y + 40, 48, pal::kText, true);
-    DrawRectangle((int)r.x + 60, (int)r.y + 118, (int)r.width - 120, 2, WithAlpha(pal::kCyan, 0.25f));
+    ui::Rect({r.x + 60, r.y + 118, r.width - 120, 2}, WithAlpha(pal::kCyan, 0.25f));
 
     const char* names[3] = {"01  远洋巡航", "02  高空作战", "03  雷暴要塞"};
     float y = r.y + 156;
@@ -220,13 +223,13 @@ void RecordsOverlay::draw() {
         snprintf(buf, sizeof buf, "%d:%02d", tt / 60, tt % 60);
         ui::TextR(buf, r.x + 1060, y, 26, WithAlpha(pal::kDim, 0.85f));
 
-        DrawRectangle((int)(r.x + 60), (int)(y + 62), (int)(r.width - 120), 1, WithAlpha(WHITE, 0.07f));
+        ui::Rect({r.x + 60, y + 62, r.width - 120, 1}, WithAlpha(WHITE, 0.07f));
         y += 96;
     }
 
     // 汇总
     float sy = r.y + 470;
-    DrawRectangle((int)r.x + 60, (int)sy, (int)r.width - 120, 2, WithAlpha(pal::kCyan, 0.25f));
+    ui::Rect({r.x + 60, sy, r.width - 120, 2}, WithAlpha(pal::kCyan, 0.25f));
     char buf[96];
     snprintf(buf, sizeof buf, "最高分  %07d", save::data().hiScore);
     ui::TextC(buf, VW * 0.5f, sy + 30, 34, pal::kGold, true);
@@ -326,7 +329,7 @@ void SettingsOverlay::update(float dt) {
 void SettingsOverlay::draw() {
     ui::Dim(0.7f, Color{4, 8, 14, 255});
     Rectangle r{VW * 0.5f - 460, 150, 920, 700};
-    ui::Panel(r, WithAlpha(Color{6, 12, 22, 255}, 0.95f), WithAlpha(pal::kCyan, 0.6f), 14, 2);
+    ui::Panel(r, Color{6, 12, 22, 255}, WithAlpha(pal::kCyan, 0.6f), 14, 2);
     ui::Frame(r, WithAlpha(pal::kCyan, 0.3f), 14);
 
     ui::TextC("设    置", VW * 0.5f, r.y + 34, 44, pal::kText, true);
@@ -340,14 +343,13 @@ void SettingsOverlay::draw() {
                   sel ? pal::kCyan : WithAlpha(pal::kDim, 0.3f), 8, 2);
         ui::TextC(tabs[i], tr.x + tr.width * 0.5f, tr.y + 10, 28, sel ? pal::kText : pal::kDim, sel);
     }
-    DrawRectangle((int)r.x + 60, (int)r.y + 190, (int)r.width - 120, 2, WithAlpha(pal::kCyan, 0.16f));
+    ui::Rect({r.x + 60, r.y + 190, r.width - 120, 2}, WithAlpha(pal::kCyan, 0.16f));
 
     float y = r.y + 236;
     const float rowH = 104;
     auto rowBg = [&](int i) {
         if (row_ != i) return;
-        DrawRectangle((int)r.x + 40, (int)(y + i * rowH - 16), (int)r.width - 80, (int)rowH - 18,
-                      WithAlpha(pal::kCyan, 0.08f));
+        ui::Rect({r.x + 40, y + i * rowH - 16, r.width - 80, rowH - 18}, WithAlpha(pal::kCyan, 0.08f));
     };
 
     if (page_ == 0) {
@@ -358,11 +360,10 @@ void SettingsOverlay::draw() {
             float ry = y + i * rowH;
             ui::Text(labels[i], r.x + 80, ry + 18, 30, row_ == i ? pal::kText : pal::kDim, row_ == i);
             float tx = r.x + 330, tw = 380;
-            DrawRectangle((int)tx, (int)ry + 32, (int)tw, 10, WithAlpha(WHITE, 0.12f));
-            DrawRectangle((int)tx, (int)ry + 32, (int)(tw * vals[i] / 100.0f), 10,
-                          row_ == i ? pal::kCyan : WithAlpha(pal::kCyan, 0.55f));
+            ui::Rect({tx, ry + 32, tw, 10}, WithAlpha(WHITE, 0.12f));
+            ui::Rect({tx, ry + 32, tw * vals[i] / 100.0f, 10}, row_ == i ? pal::kCyan : WithAlpha(pal::kCyan, 0.55f));
             for (int k = 0; k <= 20; k++)
-                DrawRectangle((int)(tx + tw * k / 20.0f), (int)ry + 28, 2, 18, WithAlpha(WHITE, 0.2f));
+                ui::Rect({tx + tw * k / 20.0f, ry + 28, 2, 18}, WithAlpha(WHITE, 0.2f));
             char buf[16];
             snprintf(buf, sizeof buf, "%d", (int)vals[i]);
             ui::Text(buf, tx + tw + 40, ry + 12, 30, row_ == i ? pal::kGold : pal::kDim, true);
