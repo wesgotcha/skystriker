@@ -3,8 +3,6 @@
 用 **C++17 + raylib 6 + raylib-cpp** 从零实现的横版弹幕射击游戏。
 机体是真正的 3D 模型（glTF），其余全部是 2D 像素素材——两者在同一个渲染帧里合成，形成"2.5D"观感。
 
-![主菜单](shots/title.png)
-
 ---
 
 ## 1. 特性
@@ -191,7 +189,6 @@ skystriker/
 │       └── World.hpp/.cpp  战斗世界：1~2 名玩家 / 敌机 / 弹幕 / Boss / 波次 / HUD
 ├── spec/ui-design.md       UI 架构设计稿
 ├── tools/                  开发期用的模型探针、字符集校验、联机回归测试
-├── shots/                  各界面截图
 ├── build.bat / run.bat
 ├── CMakeLists.txt
 └── .gitignore / .gitattributes
