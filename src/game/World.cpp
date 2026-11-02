@@ -1327,8 +1327,9 @@ void World::drawBackground() {
     rlPushMatrix();
     rlTranslatef(sh.x, sh.y, 0);
     bg_.setAlpha(1.0f);
-    bg_.draw();
-    bg_.drawProps();
+    bg_.draw();          // 天空 / 远景云 / 海面
+    bg_.drawProps();     // 岛、航母
+    bg_.drawNearClouds();  // 近景云压在最上面（含海上的舰船），做出"穿云"的层次
     if (stormMix_ > 0.0f) {
         bgStorm_.setAlpha(stormMix_);
         bgStorm_.draw();

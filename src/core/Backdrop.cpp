@@ -133,10 +133,8 @@ void Backdrop::draw() {
         // 天空上横着糊出一条白带（以前踩过）。
         float seaTop = 300.0f, seaH = VH - seaTop;
         DrawTiledX(assets::oceanSea, seaTop, seaH, offSea_, A(WHITE));
-        // 近景云压在海面之上：之前画在 sea 前面，云脚全被海水盖掉了。
-        // （海里漂的岛屿/航母由 drawProps() 在更后面画，仍然在云前面）
-        DrawTiledX(assets::oceanCloudNear, 130, assets::oceanCloudNear.height * 1.15f, offNear_,
-                   A(WithAlpha(WHITE, 0.96f)));
+        // 近景云不在这里画：它要压在海面上的岛屿/航母之上，由 drawNearClouds()
+        // 在 drawProps() 之后单独调用。
         return;
     }
 
@@ -146,6 +144,15 @@ void Backdrop::draw() {
     DrawTiledX(assets::stormCloudNear, 150, assets::stormCloudNear.height * 1.25f, offNear_,
                A(WithAlpha(WHITE, 0.9f)));
     DrawTiledXY(assets::stormRain, offRainX_, offRainY_, 1.15f, A(WithAlpha(WHITE, 0.34f)));
+}
+
+void Backdrop::drawNearClouds() {
+    // 近景云：整个场景里最靠镜头的一层，压在海面与海上的岛屿/航母之上。
+    // 顺序由调用方保证（见 World::drawBackground）：海面 → drawProps() → 这里。
+    if (preset_ != Ocean) return;
+    g_alpha = alpha_;
+    DrawTiledX(assets::oceanCloudNear, 130, assets::oceanCloudNear.height * 1.15f, offNear_,
+               A(WithAlpha(WHITE, 0.96f)));
 }
 
 void Backdrop::drawProps() {

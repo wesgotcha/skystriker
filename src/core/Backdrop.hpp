@@ -10,8 +10,9 @@ public:
 
     void setup(Preset p);
     void update(float dt);
-    void draw();
-    void drawProps();
+    void draw();          // 天空 → 远景云 → 海面
+    void drawProps();     // 海面上漂的岛屿/航母
+    void drawNearClouds();  // 近景云：压在 props 之上的最前层
 
     void  setSpeed(float s) { speed_ = s; }
     void  setAlpha(float a) { alpha_ = clampf(a, 0, 1); }
