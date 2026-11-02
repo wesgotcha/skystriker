@@ -109,18 +109,18 @@ void Backdrop::update(float dt) {
 void Backdrop::draw() {
     g_alpha = alpha_;
     if (preset_ == Dusk) {
+        // 构图对齐 assets/previews/preview_02_dusk.png（逐层做过像素级拟合，
+        // 合成误差 < 2/255）：天空 1:1 铺满，云层 1:1 不缩放，航母贴在 (1304,562)
         if (assets::duskSky.id) DrawTexture(assets::duskSky, 0, 0, A(WHITE));
-        DrawTiledX(assets::duskCloudFar, 120, assets::duskCloudFar.height * 1.05f, offFar_, A(WHITE));
-        DrawTiledX(assets::duskCloudNear, 210, assets::duskCloudNear.height * 1.1f, offNear_,
-                   A(WithAlpha(WHITE, 0.95f)));
+        DrawTiledX(assets::duskCloudFar, 250, (float)assets::duskCloudFar.height, offFar_, A(WHITE));
+        DrawTiledX(assets::duskCloudNear, 762, (float)assets::duskCloudNear.height, offNear_, A(WHITE));
         // 静态航母剪影
         if (assets::carrierDusk.id) {
-            float w = assets::carrierDusk.width * 0.95f, h = assets::carrierDusk.height * 0.95f;
-            DrawTexturePro(assets::carrierDusk, {0, 0, (float)assets::carrierDusk.width, (float)assets::carrierDusk.height},
-                           {VW - w - 40, VH - h - 20, w, h}, {0, 0}, 0, A(WithAlpha(WHITE, 0.92f)));
+            DrawTexturePro(assets::carrierDusk,
+                           {0, 0, (float)assets::carrierDusk.width, (float)assets::carrierDusk.height},
+                           {1304, 562, (float)assets::carrierDusk.width, (float)assets::carrierDusk.height},
+                           {0, 0}, 0, A(WHITE));
         }
-        // 压暗底部
-        DrawRectangleGradientV(0, (int)(VH * 0.55f), (int)VW, (int)(VH * 0.45f), BLANK, A(WithAlpha(BLACK, 0.35f)));
         return;
     }
 
@@ -132,8 +132,8 @@ void Backdrop::draw() {
         // 海面
         float seaTop = 300.0f, seaH = VH - seaTop;
         DrawTiledX(assets::oceanSea, seaTop, seaH, offSea_, A(WHITE));
-        // 海天交界压一层亮雾，弱化接缝
-        DrawRectangleGradientV(0, (int)(seaTop - 26), (int)VW, 46, A(WithAlpha(WHITE, 0.5f)), BLANK);
+        // 这里原本压了一条"顶部 0.5 白 → 底部透明"的亮雾来盖接缝，但它的上边缘是
+        // 硬边，会在天空上横着糊出一条白带。sea_tile 自带海平线渐变，不需要再补。
         return;
     }
 
@@ -148,8 +148,24 @@ void Backdrop::draw() {
 void Backdrop::drawProps() {
     g_alpha = alpha_;
     if (preset_ != Ocean) return;
-    for (auto& p : props_) {
-        if (!p.active) continue;
+
+    // 按 y 从小到大画：越靠屏幕下方离镜头越近，后画的盖住前面的。
+    // 不排序的话，远海航母可能压住更近的岛（遮挡关系反了）。
+    constexpr int kMax = (int)(sizeof(props_) / sizeof(props_[0]));
+    int order[kMax], n = 0;
+    for (int i = 0; i < kMax; i++)
+        if (props_[i].active) order[n++] = i;
+    for (int i = 1; i < n; i++) {
+        int cur = order[i], j = i - 1;
+        while (j >= 0 && props_[order[j]].y > props_[cur].y) {
+            order[j + 1] = order[j];
+            j--;
+        }
+        order[j + 1] = cur;
+    }
+
+    for (int i = 0; i < n; i++) {
+        const Prop& p = props_[order[i]];
         Texture2D t = (p.kind == 0) ? assets::islandA : (p.kind == 1 ? assets::islandB : assets::carrierSea);
         if (t.id == 0) continue;
         float w = t.width * p.scale, h = t.height * p.scale;

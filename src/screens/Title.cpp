@@ -91,10 +91,16 @@ void TitleScreen::update(float dt) {
 void TitleScreen::drawWorld() { bg_.draw(); }
 
 void TitleScreen::draw() {
-    // 菜单区域压暗，保证文字在亮云上可读
-    DrawRectangleGradientV(0, 470, (int)VW, 460, BLANK, WithAlpha(BLACK, 0.55f));
-    DrawRectangleGradientV(0, 470, (int)VW, 200, BLANK, WithAlpha(BLACK, 0.3f));
-    DrawRectangleGradientV(0, 0, (int)VW, 130, WithAlpha(BLACK, 0.45f), BLANK);
+    // 菜单区域压暗，保证文字在亮云上可读。
+    // 关键是两端都收成 alpha 0：DrawRectangleGradientV 只有一端是透明的，
+    // 另一端会留下一条横贯画面的硬边（看起来就像"贴了一层浅色遮罩"）。
+    auto band = [](float y0, float y1, float a0, float a1) {
+        DrawRectangleGradientV(0, (int)y0, (int)VW, (int)(y1 - y0), WithAlpha(BLACK, a0), WithAlpha(BLACK, a1));
+    };
+    band(0, 130, 0.45f, 0.0f);     // 顶部信息条
+    band(468, 566, 0.0f, 0.52f);   // 淡入
+    band(566, 896, 0.52f, 0.52f);  // 菜单区保持
+    band(896, 1020, 0.52f, 0.0f);  // 淡出，露出底部云海
 
     // 顶部信息
     char buf[64];
@@ -240,6 +246,26 @@ void RecordsOverlay::draw() {
 }
 
 // ---------------------------------------------------------------- 设置
+namespace {
+// 设置面板几何：绘制与命中共用同一套函数，避免两边各写一份导致点不准
+Rectangle SettingsRect() { return {VW * 0.5f - 460, 150, 920, 700}; }
+constexpr float kSetRowH = 104;
+constexpr float kSetRowTop = 236;  // 相对面板顶
+Rectangle SettingsTabRect(int i) {
+    Rectangle r = SettingsRect();
+    return {r.x + 60 + i * 212, r.y + 112, 200, 54};
+}
+Rectangle SettingsRowRect(int i) {
+    Rectangle r = SettingsRect();
+    return {r.x + 40, r.y + kSetRowTop + i * kSetRowH - 16, r.width - 80, kSetRowH - 18};
+}
+// 音量条的可点区域比视觉高度高一些，方便点中
+Rectangle SettingsSliderRect(int i) {
+    Rectangle r = SettingsRect();
+    return {r.x + 330, r.y + kSetRowTop + i * kSetRowH + 24, 380, 26};
+}
+}  // namespace
+
 SettingsOverlay::SettingsOverlay() = default;
 
 void SettingsOverlay::enter() {
@@ -314,30 +340,57 @@ void SettingsOverlay::update(float dt) {
     if (in.navLeft() || in.navRight()) adjust(in.navLeft() ? -1 : 1);
     if (in.ok() && page_ == 2) adjust(0);
 
-    // 鼠标：三个分页按钮
-    float tabW = 200, tabX = VW * 0.5f - 460 + 60;
+    // ---- 鼠标 ----
+    // 分页按钮
     for (int i = 0; i < 3; i++) {
-        Rectangle r{tabX + i * (tabW + 12), 262, tabW, 54};
-        if (ui::Hover(r) && in.lmbPressed) {
-            page_ = i;
-            row_ = 0;
-            audio::play(audio::SfxUiMove, 0.5f);
+        if (ui::Hover(SettingsTabRect(i)) && in.lmbPressed) {
+            if (page_ != i) {
+                page_ = i;
+                row_ = 0;
+                audio::play(audio::SfxUiMove, 0.5f);
+            }
         }
     }
+
+    // 三行设置项：悬停选中（只在鼠标真的动了的时候接管，免得和方向键打架）
+    for (int i = 0; i < 3; i++) {
+        Rectangle row = SettingsRowRect(i);
+        bool hov = ui::Hover(row);
+        if (hov && (in.mouseMoved || in.lmbPressed) && row_ != i) {
+            row_ = i;
+            audio::play(audio::SfxUiMove, 0.4f);
+        }
+        if (!hov) continue;
+
+        if (page_ == 0) {
+            // 音量：点/拖进度条直接赋值（拖动过程中不写盘，松手再存）
+            Rectangle bar = SettingsSliderRect(i);
+            if (in.lmb && ui::Hover(bar)) {
+                float* v = (i == 0) ? &app().volMaster : (i == 1 ? &app().volMusic : &app().volSfx);
+                *v = std::round(clampf((in.mouse.x - bar.x) / bar.width, 0.0f, 1.0f) * 100.0f);
+                app().applyVolume();
+            }
+        } else if (page_ == 1) {
+            if (in.lmbPressed) adjust(1);  // 开关：点一下切换
+        } else {
+            if (in.lmbPressed) adjust(0);  // 改键：点一下进入等待按键
+        }
+    }
+
+    if (in.lmbReleased) apply();  // 拖动结束才落盘
 }
 
 void SettingsOverlay::draw() {
     ui::Dim(0.7f, Color{4, 8, 14, 255});
-    Rectangle r{VW * 0.5f - 460, 150, 920, 700};
+    Rectangle r = SettingsRect();
     ui::Panel(r, Color{6, 12, 22, 255}, WithAlpha(pal::kCyan, 0.6f), 14, 2);
     ui::Frame(r, WithAlpha(pal::kCyan, 0.3f), 14);
 
     ui::TextC("设    置", VW * 0.5f, r.y + 34, 44, pal::kText, true);
 
     const char* tabs[3] = {"音频", "画面", "按键"};
-    float tabW = 200, tabX = r.x + 60;
     for (int i = 0; i < 3; i++) {
-        Rectangle tr{tabX + i * (tabW + 12), r.y + 112, tabW, 54};
+        Rectangle tr = SettingsTabRect(i);
         bool sel = (page_ == i);
         ui::Panel(tr, sel ? WithAlpha(pal::kCyan, 0.18f) : WithAlpha(WHITE, 0.04f),
                   sel ? pal::kCyan : WithAlpha(pal::kDim, 0.3f), 8, 2);
@@ -345,21 +398,23 @@ void SettingsOverlay::draw() {
     }
     ui::Rect({r.x + 60, r.y + 190, r.width - 120, 2}, WithAlpha(pal::kCyan, 0.16f));
 
-    float y = r.y + 236;
-    const float rowH = 104;
     auto rowBg = [&](int i) {
         if (row_ != i) return;
-        ui::Rect({r.x + 40, y + i * rowH - 16, r.width - 80, rowH - 18}, WithAlpha(pal::kCyan, 0.08f));
+        Rectangle row = SettingsRowRect(i);
+        ui::Rect(row, WithAlpha(pal::kCyan, 0.08f));
     };
+    // 行内容的左上角（与命中区同源：命中区比内容高 16px，左右各宽 40）
+    auto rowY = [&](int i) { return SettingsRowRect(i).y + 16; };
 
     if (page_ == 0) {
         const char* labels[3] = {"主音量", "音  乐", "音  效"};
         float vals[3] = {app().volMaster, app().volMusic, app().volSfx};
         for (int i = 0; i < 3; i++) {
             rowBg(i);
-            float ry = y + i * rowH;
+            float ry = rowY(i);
             ui::Text(labels[i], r.x + 80, ry + 18, 30, row_ == i ? pal::kText : pal::kDim, row_ == i);
-            float tx = r.x + 330, tw = 380;
+            Rectangle bar = SettingsSliderRect(i);
+            float tx = bar.x, tw = bar.width;
             ui::Rect({tx, ry + 32, tw, 10}, WithAlpha(WHITE, 0.12f));
             ui::Rect({tx, ry + 32, tw * vals[i] / 100.0f, 10}, row_ == i ? pal::kCyan : WithAlpha(pal::kCyan, 0.55f));
             for (int k = 0; k <= 20; k++)
@@ -377,7 +432,7 @@ void SettingsOverlay::draw() {
         bool vals[3] = {app().optShake, app().optReduceFlash, app().optFullscreen};
         for (int i = 0; i < 3; i++) {
             rowBg(i);
-            float ry = y + i * rowH;
+            float ry = rowY(i);
             ui::Text(labels[i], r.x + 80, ry + 18, 30, row_ == i ? pal::kText : pal::kDim, row_ == i);
             float tx = r.x + 380;
             ui::Panel({tx, ry + 6, 160, 56}, vals[i] ? WithAlpha(pal::kCyan, 0.22f) : WithAlpha(WHITE, 0.05f),
@@ -396,7 +451,7 @@ void SettingsOverlay::draw() {
         snprintf(keys[2], 32, "%s", "ESC / P");
         for (int i = 0; i < 3; i++) {
             rowBg(i);
-            float ry = y + i * rowH;
+            float ry = rowY(i);
             ui::Text(labels[i], r.x + 80, ry + 18, 30, row_ == i ? pal::kText : pal::kDim, row_ == i);
             bool editing = rebind_ && rebindRow_ == i;
             ui::Panel({r.x + 380, ry + 6, 260, 56},
@@ -407,7 +462,7 @@ void SettingsOverlay::draw() {
         }
     }
 
-    ui::TextC("Q / E 换面板    上下键 选择    左右键 调整    ESC 返回", VW * 0.5f, r.y + r.height - 52, 20,
+    ui::TextC("Q / E 换面板    上下键 选择    左右键 / 鼠标 调整    ESC 返回", VW * 0.5f, r.y + r.height - 52, 20,
               WithAlpha(pal::kDim, 0.6f));
 }
 
