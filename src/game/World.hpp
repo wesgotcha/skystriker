@@ -1,5 +1,13 @@
 #pragma once
 // 战斗世界：玩家、敌机、弹幕、Boss、波次
+//
+// 双人 / 对战说明
+// ---------------
+// 玩家从单个成员改成 Fighter 数组（最多两人）。两种对局共用同一套模拟：
+//   - 组队（campaign）：两人一起打波次，敌机锁定最近的一名玩家，道具谁捡谁用
+//   - 对战（versus）  ：不生成敌机，两人在左右半场互相射击，谁先被打光装甲谁输
+// 联机采用「锁步」：双方用同一份输入跑同一份模拟，因此 step() 只吃 Ctrl，
+// 绝不读 app().in —— 否则两端输入不同步，几十帧后就会飘。
 #include "Backdrop.hpp"
 #include "Common.hpp"
 #include "Pose.hpp"
@@ -12,6 +20,8 @@ namespace sky {
 // 全局战斗常量（HUD 与逻辑共用）
 constexpr int   kWaveCount = 5;
 constexpr float kPlayerMaxHp = 100.0f;
+constexpr int   kMaxPlayers = 2;
+constexpr float kSimStep = 1.0f / 60.0f;  // 固定步长：联机锁步的前提
 
 struct Bullet {
     Vector2 pos{0, 0};
@@ -24,6 +34,7 @@ struct Bullet {
     Color   col = RED;
     bool    big = false;      // 大炮弹：体型大、伤害高
     bool    hostile = false;  // 敌弹（true）/ 玩家弹（false）
+    int     owner = 0;        // 玩家弹的发射者槽位（对战里用来排除自己）
     bool    alive = false;
 };
 
@@ -100,6 +111,69 @@ struct Ghost {
     Vector2    pos{0, 0};
     pose::Pose pose;
     float      life = 0.3f, maxLife = 0.3f;
+    int        slot = 0;
+};
+
+// 一帧的按键（按住状态）。按下沿由 World 内部和上一帧对比得出，
+// 这样联机只需要同步 7 个 bit，不需要同步"这一帧刚按下"。
+struct Ctrl {
+    bool left = false, right = false, up = false, down = false;
+    bool fire = false, bomb = false, dash = false;
+    uint16_t bits() const {
+        return (uint16_t)((left ? 1 : 0) | (right ? 2 : 0) | (up ? 4 : 0) | (down ? 8 : 0) |
+                          (fire ? 16 : 0) | (bomb ? 32 : 0) | (dash ? 64 : 0));
+    }
+    static Ctrl fromBits(uint16_t b) {
+        Ctrl c;
+        c.left = (b & 1) != 0; c.right = (b & 2) != 0; c.up = (b & 4) != 0; c.down = (b & 8) != 0;
+        c.fire = (b & 16) != 0; c.bomb = (b & 32) != 0; c.dash = (b & 64) != 0;
+        return c;
+    }
+};
+
+struct TickInput {
+    Ctrl    p[kMaxPlayers];
+    bool    mouseAim = false;  // 单人键鼠模式：按住左键跟随光标（联机不用）
+    Vector2 mouse{0, 0};
+};
+
+// 一名玩家（组队 / 对战通用）
+struct Fighter {
+    bool       active = false;
+    int        slot = 0;
+    int        craft = 0;
+    int        skin = 0;
+    int        face = 1;       // +1 朝右，-1 朝左（对战里 2P 朝左）
+    Vector2    pos{500, 700};
+    Vector2    vel{0, 0};
+    pose::Pose pose;
+    float      lastY = 0;
+    float      vyN = 0;
+    float      invuln = 0;
+    float      fireCd = 0;
+    float      hp = kPlayerMaxHp;
+    int        weapon = 1;
+    int        bombs = 2;
+    bool       down = false;     // 阵亡 / 等待复活
+    float      deathT = 0;       // 死亡爆炸剩余时间（这期间不画机体）
+    float      respawnT = 0;     // 组队复活倒计时
+    float      dashT = 0;
+    float      dashCd = 0;
+    Vector2    dashDir{1, 0};
+    float      ghostTimer = 0;
+    std::vector<Ghost> ghosts;
+    uint16_t   prevBits = 0;
+    float      hitFlash = 0;
+    float      bombFlash = 0;
+    int        kills = 0;
+};
+
+struct RunSetup {
+    int      mode = 0;               // MatchMode（0 = 单人）
+    int      craft[kMaxPlayers] = {0, 0};
+    int      skin[kMaxPlayers] = {0, 0};
+    uint32_t seed = 0x5EEDu;
+    bool     online = false;
 };
 
 enum class WorldState { Playing, Cleared, Failed };
@@ -113,9 +187,10 @@ enum WavePhase {
 
 class World {
 public:
-    void start(bool continueRun);
-    void update(float dt, bool autopilot);
+    void start(const RunSetup& setup, bool continueRun);
     void reset();
+    // dt 固定为 kSimStep；输入由调用方按槽位准备好（联机从锁步缓冲里取）
+    void step(float dt, const TickInput& in, bool autopilot);
 
     void drawBackground();  // 2D：视差 + 地面阴影
     void draw3D();          // 3D：所有机体
@@ -125,15 +200,20 @@ public:
     // 状态查询
     bool  finished() const { return finished_; }
     bool  cleared() const { return state_ == WorldState::Cleared; }
+    bool  versus() const { return versus_; }
+    bool  online() const { return online_; }
+    int   playerCount() const { return playerCount_; }
+    int   winner() const { return winner_; }  // 对战：0/1，未分胜负 -1
+    const Fighter& fighter(int i) const { return p_[clampi(i, 0, kMaxPlayers - 1)]; }
     int   score() const { return score_; }
     int   kills() const { return kills_; }
     int   maxCombo() const { return maxCombo_; }
     float elapsed() const { return elapsed_; }
     int   stars() const;
-    int   hp() const { return (int)hp_; }
+    int   hp() const { return (int)p_[0].hp; }
     int   maxHp() const { return (int)kPlayerMaxHp; }
-    float hp01() const { return clampf(hp_ / kPlayerMaxHp, 0, 1); }
-    int   bombs() const { return bombs_; }
+    float hp01() const { return clampf(p_[0].hp / kPlayerMaxHp, 0, 1); }
+    int   bombs() const { return p_[0].bombs; }
     int   waveIndex() const { return wave_; }
     int   waveTotal() const { return kWaveCount; }
     int   enemiesLeft() const;
@@ -148,8 +228,8 @@ public:
     std::string debugInfo() const;
 
 private:
-    void updatePlayer(float dt, bool autopilot);
-    void startDash(Vector2 dir);
+    void updatePlayer(int slot, float dt, const Ctrl& c, bool autopilot);
+    void startDash(int slot, Vector2 dir);
     void updateBullets(float dt);
     void updateEnemies(float dt);
     void updateBoss(float dt);
@@ -177,13 +257,22 @@ private:
     void placeEnemy(Enemy& e, Vector2 p);
     void updateEnemyPose(Enemy& e, float dt);
 
-    void addBullet(Vector2 pos, Vector2 vel, float r, Color col, int kind, float dmg, bool hostile, bool big = false);
+    // 目标选择：活着且距离最近的玩家
+    int     nearestPlayer(Vector2 from) const;
+    Vector2 aimTarget(Vector2 from) const;
+    bool    anyPlayerAlive() const;
+
+    void addBullet(Vector2 pos, Vector2 vel, float r, Color col, int kind, float dmg, bool hostile,
+                   bool big = false, int owner = 0);
     void addBurst(Vector2 pos, float count, float speed, float spread, Color col, float r, float baseAngle,
                   float dmg, bool hostile);
     void addExplosion(Vector2 pos, float size, Color col, int count = 14);
     void addHitSpark(Vector2 pos, Color col);
     void addTrail(Vector2 pos, Vector2 dir, Color col);
-    void damagePlayer(float dmg);
+    void damagePlayer(int slot, float dmg);
+    void damagePlayerPvp(int slot, float dmg);
+    void killPlayer(int slot);
+    void respawnPlayer(int slot);
     void damageEnemy(int idx, float dmg);
     void ramExplode(Enemy& e);
     void addScore(int base);
@@ -196,31 +285,19 @@ private:
     void drawParticles();
     void drawPickups();
     void drawEnemyBars();
+    void drawPlayerHudPanel(int slot, Rectangle r, bool compact);
+    void drawDuelHud();
 
     // 数据
     Backdrop bg_;
     Backdrop bgStorm_;
     float    stormMix_ = 0;
 
-    Vector2  player_{500, 700};
-    Vector2  playerVel_{0, 0};
-    pose::Pose playerPose_;
-    float    playerLastY_ = 0;
-    float    playerVyN_ = 0;
-    float    invuln_ = 0;
-    float    fireCd_ = 0;
-    int      weapon_ = 1;
-    float    hp_ = 100;
-    int      bombs_ = 2;
-    float    bombFlash_ = 0;
-    float    playerDeathT_ = 0;
-
-    // 闪身
-    float    dashT_ = 0;
-    float    dashCd_ = 0;
-    Vector2  dashDir_{1, 0};
-    float    ghostTimer_ = 0;
-    std::vector<Ghost> ghosts_;
+    Fighter  p_[kMaxPlayers];
+    int      playerCount_ = 1;
+    bool     versus_ = false;
+    bool     online_ = false;
+    int      winner_ = -1;
 
     std::vector<Bullet>   bullets_;
     std::vector<Enemy>    enemies_;

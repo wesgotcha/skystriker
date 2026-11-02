@@ -34,6 +34,8 @@ void load() {
     g_profile.runs = gi("runs", 0);
     g_profile.craft = gi("craft", 0);
     g_profile.skin = gi("skin", 0);
+    g_profile.craft2 = gi("craft2", 0);
+    g_profile.skin2 = gi("skin2", 2);
     g_profile.stars[0] = gi("star0", 0);
     g_profile.stars[1] = gi("star1", 0);
     g_profile.stars[2] = gi("star2", 0);
@@ -60,6 +62,8 @@ void save() {
     f << "runs=" << g_profile.runs << "\n";
     f << "craft=" << g_profile.craft << "\n";
     f << "skin=" << g_profile.skin << "\n";
+    f << "craft2=" << g_profile.craft2 << "\n";
+    f << "skin2=" << g_profile.skin2 << "\n";
     f << "star0=" << g_profile.stars[0] << "\n";
     f << "star1=" << g_profile.stars[1] << "\n";
     f << "star2=" << g_profile.stars[2] << "\n";

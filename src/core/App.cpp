@@ -2,7 +2,10 @@
 
 #include "Assets.hpp"
 #include "Audio.hpp"
+#include "Match.hpp"
+#include "Net.hpp"
 #include "Platform.hpp"
+#include "Save.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -58,6 +61,7 @@ Vector3 CameraRig::FromScreen(float sx, float sy) {
 
 // ---------------------------------------------------------------- App
 bool App::init(int argc, char** argv) {
+    int mpMode = -1;  // 0 合作 / 1 对战
     // 解析命令行
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -75,6 +79,7 @@ bool App::init(int argc, char** argv) {
             std::string s = v;
             if (s == "boot") startAt = Sid::Boot;
             else if (s == "title") startAt = Sid::Title;
+            else if (s == "lobby") startAt = Sid::Lobby;
             else if (s == "hangar") startAt = Sid::Hangar;
             else if (s == "game") startAt = Sid::Game;
         } else if (a == "--demo") demoMode = true;
@@ -99,6 +104,15 @@ bool App::init(int argc, char** argv) {
         else if (const char* v = val("--overlay=")) overlayName = v;
         else if (const char* v = val("--size=")) { sscanf(v, "%dx%d", &forceW, &forceH); }
         else if (a == "--result") forceResult = true;
+        // ---- 双人 / 联机调试入口 ----
+        else if (const char* v = val("--mp=")) {
+            std::string s = v;
+            if (s == "coop") mpMode = 0;
+            else if (s == "versus") mpMode = 1;
+        }
+        else if (a == "--host") autoHost = true;
+        else if (const char* v = val("--join=")) autoJoinIp = v;
+        else if (a == "--autostart") autoNetStart = true;
     }
 
     // exe 是 GUI 子系统（-mwindows），默认没有控制台。
@@ -215,6 +229,30 @@ bool App::init(int argc, char** argv) {
         for (int i = 0; i < assets::modelJobCount(); i++) assets::loadModelJob(i);
         lap("models(all)");
     }
+
+    // 直达某屏（--screen=game 等）不经过 Boot，这里补一次存档读取
+    save::load();
+    save::data().skin = assets::normalizeSkin(save::data().skin);
+    save::data().skin2 = assets::normalizeSkin(save::data().skin2);
+    if (mpMode >= 0) {
+        bool lan = autoHost || !autoJoinIp.empty();
+        MatchMode m = (mpMode == 1) ? (lan ? MatchMode::VersusLan : MatchMode::VersusLocal)
+                                    : (lan ? MatchMode::CoopLan : MatchMode::CoopLocal);
+        match::setMode(m);
+        auto& c = match::cfg();
+        c.online = lan;
+        c.craft[0] = clampi(save::data().craft, 0, 5);
+        c.skin[0] = save::data().skin;
+        c.craft[1] = clampi(save::data().craft2, 0, 5);
+        c.skin[1] = save::data().skin2;
+        c.seed = (uint32_t)(GetTime() * 1000.0);
+        if (lan) {
+            autoNetMode = (int)m;
+            startAt = Sid::Lobby;
+            net::init();
+        }
+    }
+
     goNow(startAt);
     if (!overlayName.empty()) {
         auto ov = MakeOverlay(overlayName);
@@ -583,6 +621,7 @@ void App::stepSimulation(float dt) {
 void App::shutdown() {
     clearOverlaysNow();
     cur_.reset();
+    net::shutdown();
     assets::shutdown();
     audio::shutdown();
     if (canvas.id != 0) UnloadRenderTexture(canvas);

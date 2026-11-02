@@ -15,6 +15,9 @@ struct Profile {
     int   runs = 0;
     int   craft = 0;
     int   skin = 0;
+    int   craft2 = 0;   // 2P 的机体 / 配色（同屏双人用；默认和 1P 同机型、不同配色，
+                        // 因为只有 0 号机型一开始就解锁）
+    int   skin2 = 2;
     float volMaster = 80.0f;
     float volMusic = 45.0f;
     float volSfx = 85.0f;

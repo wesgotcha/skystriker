@@ -3,8 +3,10 @@
 #include "App.hpp"
 #include "Backdrop.hpp"
 #include "Common.hpp"
+#include "Match.hpp"
 
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -109,6 +111,38 @@ private:
     void     activate(int idx);
 };
 
+// ---------------------------------------------------------------- 双人 / 联机入口
+class LobbyScreen : public Screen {
+public:
+    void enter() override;
+    void update(float dt) override;
+    void drawWorld() override;
+    void draw() override;
+    const char* debugName() const override { return "lobby"; }
+
+private:
+    enum Phase { Menu, NetRole, Hosting, Browsing, Connecting };
+    Phase     phase_ = Menu;
+    int       focus_ = 0;
+    int       hostSel_ = 0;
+    MatchMode netMode_ = MatchMode::CoopLan;
+    float     t_ = 0;
+    float     blink_ = 0;
+    bool      ipEdit_ = false;
+    std::string ip_;
+    std::string msg_;
+    float     msgT_ = 0;
+    Backdrop  bg_;
+
+    void startHost();
+    void startJoin();
+    void startOnlineMatch();
+    void launchLocal(MatchMode m);
+    void launchOnline();
+    void back();
+    bool launched_ = false;  // 已经决定开打（转场期间会重复走到这一步）
+};
+
 // ---------------------------------------------------------------- HANGAR
 class HangarScreen : public Screen {
 public:
@@ -138,12 +172,17 @@ private:
     float t_ = 0;
     int   craft_ = 0;
     int   skin_ = 0;
+    int   slot_ = 0;              // 双人时正在编辑哪一名玩家
+    int   craftSel_[2] = {0, 0};
+    int   skinSel_[2] = {0, 2};
     float yaw_ = 0;
     float appear_[5] = {0, 0, 0, 0, 0};
     float swapT_ = 1.0f;
     bool  mouseMode_ = false;
     int   focus_ = 0;  // 0=选择条 1=出击
     void  changeCraft(int d);
+    void  switchSlot();
+    void  applySelection();
     void  drawStatPanel();
     void  drawStrip();
     void  drawResultPanel();
@@ -176,11 +215,38 @@ public:
 
 private:
     float t_ = 0;
+    float acc_ = 0;          // 固定步长累加器
+    uint32_t tick_ = 0;      // 锁步帧号（联机）
+    uint32_t lastSentTick_ = 0;   // 下一个待发送的 tick
+    std::map<uint32_t, uint16_t> localIn_;
+    bool  resultShown_ = false;
+    bool  online_ = false;
+    float netStall_ = 0;
+    void  stepLocal(float dt);
+    void  stepNet(float dt);
+    void  finishRun();
+};
+
+// 对战结算 / 掉线提示（同屏对战、联机模式共用）
+class DuelOverlay : public Screen {
+public:
+    DuelOverlay(std::string title, std::string sub, bool rematch);
+    void update(float dt) override;
+    void draw() override;
+    bool freezeWorld() const override { return true; }
+    const char* debugName() const override { return "duel"; }
+
+private:
+    std::string title_, sub_;
+    bool  rematch_ = false;
+    float t_ = 0;
+    int   focus_ = 0;  // 0=再战 1=返回
 };
 
 // 暂停 / 阵亡
 class PauseOverlay : public Screen {
 public:
+    explicit PauseOverlay(bool remote = false) : remote_(remote) {}
     void update(float dt) override;
     void draw() override;
     bool freezeWorld() const override { return true; }
@@ -189,6 +255,8 @@ public:
 private:
     int   focus_ = 0;
     float t_ = 0;
+    bool  remote_ = false;   // 由对方按下暂停而弹出：不要重复发 PAUSE
+    bool  resume_ = false;
 };
 
 class GameOverOverlay : public Screen {

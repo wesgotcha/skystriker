@@ -12,7 +12,8 @@
 namespace sky {
 
 namespace {
-const char* kMenu[5] = {"开始游戏", "继续游戏", "排    行", "设    置", "退    出"};
+constexpr int kMenuCount = 6;
+const char* kMenu[kMenuCount] = {"开始游戏", "双    人", "继续游戏", "排    行", "设    置", "退    出"};
 }
 
 void TitleScreen::enter() {
@@ -29,25 +30,39 @@ void TitleScreen::enter() {
 }
 
 void TitleScreen::activate(int idx) {
+    auto solo = []() {
+        match::setMode(MatchMode::Solo);
+        auto& c = match::cfg();
+        c.online = false;
+        c.craft[0] = clampi(save::data().craft, 0, 5);
+        c.skin[0] = assets::normalizeSkin(save::data().skin);
+        c.seed = (uint32_t)(GetTime() * 1000.0);
+    };
     switch (idx) {
         case 0:
             audio::play(audio::SfxUiSelect, 0.8f);
+            solo();
             app().go(Sid::Hangar);
             break;
         case 1:
+            audio::play(audio::SfxUiSelect, 0.8f);
+            app().go(Sid::Lobby);
+            break;
+        case 2:
             if (save::data().runs <= 0) {
                 audio::play(audio::SfxHit, 0.4f, 0.6f);
                 break;
             }
             audio::play(audio::SfxUiSelect, 0.8f);
+            solo();
             StartNewRun(true);
             app().go(Sid::Game);
             break;
-        case 2:
+        case 3:
             audio::play(audio::SfxUiSelect, 0.8f);
             app().pushOverlay(std::make_unique<RecordsOverlay>());
             break;
-        case 3:
+        case 4:
             audio::play(audio::SfxUiSelect, 0.8f);
             app().pushOverlay(std::make_unique<SettingsOverlay>());
             break;
@@ -79,20 +94,20 @@ void TitleScreen::update(float dt) {
     int prev = focus_;
 
     if (app().in.navUp()) {
-        focus_ = (focus_ + 4) % 5;
+        focus_ = (focus_ + kMenuCount - 1) % kMenuCount;
         mouseMode_ = false;
     }
     if (app().in.navDown()) {
-        focus_ = (focus_ + 1) % 5;
+        focus_ = (focus_ + 1) % kMenuCount;
         mouseMode_ = false;
     }
-    if (focus_ == 1 && !canContinue && app().in.navUp()) focus_ = 0;
-    if (focus_ == 1 && !canContinue && app().in.navDown()) focus_ = 2;
+    if (focus_ == 2 && !canContinue && app().in.navUp()) focus_ = 1;
+    if (focus_ == 2 && !canContinue && app().in.navDown()) focus_ = 3;
     if (focus_ != prev) audio::play(audio::SfxUiMove, 0.5f);
 
     // 鼠标
-    float startY = 536.0f, lh = 72.0f;
-    for (int i = 0; i < 5; i++) {
+    float startY = 516.0f, lh = 70.0f;
+    for (int i = 0; i < kMenuCount; i++) {
         Rectangle r{VW * 0.5f - 260, startY + i * lh - 6, 520, lh - 8};
         if (ui::Hover(r)) {
             if (focus_ != i) {
@@ -134,9 +149,9 @@ void TitleScreen::draw() {
                                F(WithAlpha(BLACK, a1)));
     };
     band(0, 130, 0.45f, 0.0f);     // 顶部信息条
-    band(468, 566, 0.0f, 0.52f);   // 淡入
-    band(566, 896, 0.52f, 0.52f);  // 菜单区保持
-    band(896, 1020, 0.52f, 0.0f);  // 淡出，露出底部云海
+    band(486, 556, 0.0f, 0.52f);   // 淡入
+    band(556, 930, 0.52f, 0.52f);  // 菜单区保持
+    band(930, 1040, 0.52f, 0.0f);  // 淡出，露出底部云海
 
     // 顶部信息
     char buf[64];
@@ -151,11 +166,11 @@ void TitleScreen::draw() {
     }
 
     // 菜单
-    float startY = 536.0f + rise, lh = 72.0f;
+    float startY = 516.0f + rise, lh = 70.0f;
     bool canContinue = save::data().runs > 0;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < kMenuCount; i++) {
         bool sel = (focus_ == i);
-        bool enabled = !(i == 1 && !canContinue);
+        bool enabled = !(i == 2 && !canContinue);
         float y = startY + i * lh;
         // 浮动位移量化到整像素：亚像素位移会让 40px 的字和两侧三角每帧重采样一次，
         // 看起来就是"字在抖"。像素游戏里按整像素跳反而更干净。

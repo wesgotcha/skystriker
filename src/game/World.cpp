@@ -47,6 +47,7 @@ constexpr float kDashCd = 0.80f;
 constexpr float kDmgBullet = 9.0f;
 constexpr float kDmgShell = 25.0f;
 constexpr float kDmgRam = 34.0f;
+constexpr float kDmgPvp = 6.0f;   // 对战中一发玩家弹的伤害
 
 constexpr float kChargeTime = 1.05f;  // A 蓄力提示时长
 constexpr float kRamSpeed = 1500.0f;
@@ -138,7 +139,6 @@ void World::reset() {
     enemies_.clear();
     particles_.clear();
     pickups_.clear();
-    ghosts_.clear();
     boss_ = Enemy{};
     score_ = 0;
     kills_ = 0;
@@ -163,36 +163,81 @@ void World::reset() {
     bossEnterDur_ = 2.0f;
     bossPending_ = false;
     bossDelay_ = 0;
-    bombFlash_ = 0;
-    playerDeathT_ = 0;
-    invuln_ = 1.5f;
-    player_ = {500, 720};
-    playerVel_ = {0, 0};
-    playerPose_ = pose::FromRoll(pose::kPlayer.base);
-    playerLastY_ = player_.y;
-    playerVyN_ = 0;
-    weapon_ = 1;
-    hp_ = kPlayerMaxHp;
-    bombs_ = 2;
-    dashT_ = 0;
-    dashCd_ = 0;
-    dashDir_ = {1, 0};
-    ghostTimer_ = 0;
+    versus_ = false;
+    online_ = false;
+    winner_ = -1;
+    playerCount_ = 1;
+
+    for (int i = 0; i < kMaxPlayers; i++) {
+        Fighter f;
+        f.active = (i == 0);
+        f.slot = i;
+        f.pos = (i == 0) ? Vector2{460, 720} : Vector2{760, 900};
+        f.vel = {0, 0};
+        f.pose = pose::FromRoll(pose::kPlayer.base);
+        f.lastY = f.pos.y;
+        f.vyN = 0;
+        f.invuln = 1.5f;
+        f.fireCd = 0;
+        f.hp = kPlayerMaxHp;
+        f.weapon = 1;
+        f.bombs = 2;
+        f.down = false;
+        f.deathT = 0;
+        f.respawnT = 0;
+        f.dashT = 0;
+        f.dashCd = 0;
+        f.dashDir = {1, 0};
+        f.ghostTimer = 0;
+        f.prevBits = 0;
+        f.hitFlash = 0;
+        f.bombFlash = 0;
+        f.kills = 0;
+        f.face = 1;
+        f.ghosts.clear();
+        p_[i] = f;
+    }
+
     rng_.seed(0x5EED);
     bg_.setup(Backdrop::Ocean);
     bgStorm_.setup(Backdrop::Storm);
 }
 
-void World::start(bool continueRun) {
+void World::start(const RunSetup& setup, bool continueRun) {
     reset();
-    if (continueRun) {
-        weapon_ = 2;
-        bombs_ = 3;
+    rng_.seed(setup.seed);
+    online_ = setup.online;
+    versus_ = (setup.mode == 2 || setup.mode == 4);
+    playerCount_ = (setup.mode == 0) ? 1 : 2;
+
+    for (int i = 0; i < kMaxPlayers; i++) {
+        Fighter& f = p_[i];
+        f.active = (i < playerCount_);
+        f.craft = clampi(setup.craft[i], 0, 5);
+        f.skin = assets::normalizeSkin(setup.skin[i]);
     }
-    wave_ = 0;
-    wavePhase_ = WP_Banner;
-    waveT_ = 1.5f;
-    showBanner("WAVE 1", 1.5f);
+
+    if (versus_) {
+        // 对战：左右半场各站一个，机头相对
+        p_[0].pos = {520, 620};
+        p_[0].face = 1;
+        p_[1].pos = {1400, 620};
+        p_[1].face = -1;
+        p_[1].invuln = 2.5f;
+        p_[0].invuln = 2.5f;
+        showBanner("VS", 1.2f);
+    } else {
+        p_[0].pos = {460, 700};
+        p_[1].pos = {800, 900};
+        if (continueRun) {
+            p_[0].weapon = 2;
+            p_[0].bombs = 3;
+        }
+        wave_ = 0;
+        wavePhase_ = WP_Banner;
+        waveT_ = 1.5f;
+        showBanner("WAVE 1", 1.5f);
+    }
 }
 
 void World::showBanner(const std::string& s, float dur) {
@@ -200,6 +245,33 @@ void World::showBanner(const std::string& s, float dur) {
     bannerDur_ = dur;
     bannerT_ = dur;
 }
+
+// ---------------------------------------------------------------- 目标选择
+// 双人时敌机只锁最近的那一个；两人都倒下时退回 P1 的位置（只是为了让弹道有意义，
+// 此时战斗其实已经结束）。
+bool World::anyPlayerAlive() const {
+    for (int i = 0; i < playerCount_; i++)
+        if (!p_[i].down) return true;
+    return false;
+}
+
+int World::nearestPlayer(Vector2 from) const {
+    int best = 0;
+    float bestD = 1e18f;
+    for (int i = 0; i < playerCount_; i++) {
+        if (p_[i].down) continue;
+        float dx = p_[i].pos.x - from.x, dy = p_[i].pos.y - from.y;
+        float d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    if (bestD > 1e17f) {
+        for (int i = 0; i < playerCount_; i++)
+            if (p_[i].active) return i;
+    }
+    return best;
+}
+
+Vector2 World::aimTarget(Vector2 from) const { return p_[nearestPlayer(from)].pos; }
 
 // ---------------------------------------------------------------- 工具
 Vector2 World::shakeOffset() const {
@@ -213,7 +285,7 @@ float World::bossHp01() const {
     return clampf(boss_.hp / boss_.maxHp, 0, 1);
 }
 
-float World::dashReady01() const { return clampf(1.0f - dashCd_ / kDashCd, 0, 1); }
+float World::dashReady01() const { return clampf(1.0f - p_[0].dashCd / kDashCd, 0, 1); }
 
 int World::enemiesLeft() const {
     int n = 0;
@@ -225,14 +297,19 @@ int World::enemiesLeft() const {
 }
 
 int World::stars() const {
-    if (state_ != WorldState::Cleared) return 0;
+    if (state_ != WorldState::Cleared || versus_) return 0;
+    // 双人：按两人剩余装甲的平均值评星，单人时就是自己的血量
+    float sum = 0;
+    for (int i = 0; i < playerCount_; i++) sum += clampf(p_[i].hp / kPlayerMaxHp, 0, 1);
+    float h = (playerCount_ > 0) ? sum / playerCount_ : 0.0f;
     int s = 1;
-    if (hp01() >= 0.45f) s = 2;
-    if (hp01() >= 0.75f) s = 3;
+    if (h >= 0.45f) s = 2;
+    if (h >= 0.75f) s = 3;
     return s;
 }
 
-void World::addBullet(Vector2 pos, Vector2 vel, float r, Color col, int kind, float dmg, bool hostile, bool big) {
+void World::addBullet(Vector2 pos, Vector2 vel, float r, Color col, int kind, float dmg, bool hostile, bool big,
+                      int owner) {
     if ((int)bullets_.size() > 1200) return;
     Bullet b;
     b.pos = pos;
@@ -243,6 +320,7 @@ void World::addBullet(Vector2 pos, Vector2 vel, float r, Color col, int kind, fl
     b.dmg = dmg;
     b.hostile = hostile;
     b.big = big;
+    b.owner = owner;
     b.life = 8.0f;
     b.alive = true;
     b.spin = 0;
@@ -326,9 +404,10 @@ void World::spawnPickup(Vector2 pos, int kind) {
     p.kind = kind;
     p.t = 0;
     p.alive = true;
-    // 出场就朝玩家一侧弹出去：敌机全在右半场，光靠原来的 -90px/s 漂移，
+    // 出场就朝最近玩家一侧弹出去：敌机全在右半场，光靠原来的 -90px/s 漂移，
     // 道具会停在 x≈1300（玩家上限 1150）永远够不到。
-    Vector2 d{player_.x - pos.x, player_.y - pos.y};
+    Vector2 tgt = aimTarget(pos);
+    Vector2 d{tgt.x - pos.x, tgt.y - pos.y};
     float l = std::sqrt(d.x * d.x + d.y * d.y);
     if (l < 1.0f) { d = {-1, 0}; l = 1.0f; }
     float sp = 470.0f;
@@ -456,30 +535,90 @@ void World::activateBoss() {
 }
 
 // ---------------------------------------------------------------- 玩家
-void World::damagePlayer(float dmg) {
-    if (invuln_ > 0 || playerDeathT_ > 0 || state_ != WorldState::Playing) return;
-    if (app().godMode) return;
-    hp_ = std::max(0.0f, hp_ - dmg);
+void World::damagePlayer(int slot, float dmg) {
+    Fighter& f = p_[slot];
+    if (!f.active || f.down || f.deathT > 0 || state_ != WorldState::Playing) return;
+    if (f.invuln > 0) return;
+    if (!online_ && app().godMode) return;
+    f.hp = std::max(0.0f, f.hp - dmg);
+    f.hitFlash = 0.12f;
     audio::play(audio::SfxDamage, 0.95f, 1.0f);
-    addExplosion(player_, 130, Color{255, 150, 100, 255}, 18);
+    addExplosion(f.pos, 130, Color{255, 150, 100, 255}, 18);
     shake_ = std::max(shake_, 0.85f);
     flash_ = 0.5f;
     combo_ = 0;
-    weapon_ = std::max(1, weapon_ - 1);
-    if (hp_ <= 0) {
-        playerDeathT_ = 1.4f;
-        state_ = WorldState::Failed;
-        stateT_ = 0;
-        addExplosion(player_, 240, Color{255, 120, 80, 255}, 44);
-        audio::play(audio::SfxBigExplode, 1.0f, 0.9f);
-        shake_ = 1.2f;
+    f.weapon = std::max(1, f.weapon - 1);
+    if (f.hp <= 0) {
+        killPlayer(slot);
     } else {
-        invuln_ = 0.85f;
+        f.invuln = 0.85f;
     }
 }
 
+// 对战专用伤害：不做武器降级、不炸整屏，只扣装甲 + 给一点点无敌帧，
+// 否则一轮四发齐射会在同一帧里全部判定命中。
+void World::damagePlayerPvp(int slot, float dmg) {
+    Fighter& f = p_[slot];
+    if (!f.active || f.down || state_ != WorldState::Playing) return;
+    if (f.invuln > 0) return;
+    if (!online_ && app().godMode) return;
+    f.hp = std::max(0.0f, f.hp - dmg);
+    f.hitFlash = 0.1f;
+    addHitSpark(f.pos, Color{255, 220, 160, 255});
+    shake_ = std::max(shake_, 0.25f);
+    if (f.hp <= 0) {
+        killPlayer(slot);
+    } else {
+        f.invuln = 0.06f;
+    }
+}
+
+void World::killPlayer(int slot) {
+    Fighter& f = p_[slot];
+    f.down = true;
+    f.hp = 0;
+    f.deathT = 1.4f;
+    f.dashT = 0;
+    addExplosion(f.pos, 240, Color{255, 120, 80, 255}, 44);
+    audio::play(audio::SfxBigExplode, 1.0f, 0.9f);
+    shake_ = 1.2f;
+
+    if (versus_) {
+        winner_ = 1 - slot;
+        state_ = WorldState::Cleared;
+        stateT_ = 0;
+    } else {
+        // 组队：还有队友活着就不算失败，倒下的等倒计时复活
+        bool anyAlive = false;
+        for (int i = 0; i < playerCount_; i++)
+            if (i != slot && !p_[i].down) anyAlive = true;
+        if (anyAlive) {
+            f.respawnT = 4.0f;
+        } else {
+            state_ = WorldState::Failed;
+            stateT_ = 0;
+        }
+    }
+}
+
+void World::respawnPlayer(int slot) {
+    Fighter& f = p_[slot];
+    f.down = false;
+    f.hp = 60.0f;
+    f.deathT = 0;
+    f.respawnT = 0;
+    f.invuln = 2.0f;
+    f.pos = (slot == 0) ? Vector2{460, 760} : Vector2{800, 860};
+    f.lastY = f.pos.y;
+    f.vyN = 0;
+    f.dashT = 0;
+    f.dashCd = 0;
+    f.ghosts.clear();
+    addExplosion(f.pos, 90, Color{150, 240, 255, 255}, 12);
+}
+
 std::string World::debugInfo() const {
-    char b[512];
+    char b[640];
     int pb = 0, eb = 0;
     for (auto& x : bullets_) {
         if (!x.alive) continue;
@@ -490,48 +629,69 @@ std::string World::debugInfo() const {
         if (x.alive) pk++;
     snprintf(b, sizeof b,
              "deathT=%.2f pLoad=%d pSkin=%d state=%d fin=%d wave=%d/%d phase=%d hp=%.0f lives=%d dash=%.2f/%.2f "
-             "player=(%.0f,%.0f) bullets=%d(p%d/e%d) enemies=%d left=%d boss=%d charging=%d score=%d "
-             "bossSt=%d bossPos=(%.0f,%.0f) bossHp=%.2f pickups=%d drop=%d",
-             playerDeathT_, (int)assets::players[save::data().craft].loaded,
-             (int)assets::players[save::data().craft].skin[save::data().skin].id,
-             (int)state_, (int)finished_, std::min(wave_ + 1, kWaveCount), kWaveCount, wavePhase_, hp_, (int)hp_, dashT_, dashCd_, player_.x, player_.y,
-             (int)bullets_.size(), pb, eb, (int)enemies_.size(), enemiesLeft(), (int)boss_.alive,
+             "player=(%.0f,%.0f) p2=(%.0f,%.0f) hp2=%.0f down2=%d bullets=%d(p%d/e%d) enemies=%d left=%d boss=%d "
+             "charging=%d score=%d bossSt=%d bossPos=(%.0f,%.0f) bossHp=%.2f pickups=%d drop=%d versus=%d winner=%d "
+             "pcount=%d net=%d",
+             p_[0].deathT, (int)assets::players[clampi(save::data().craft, 0, 5)].loaded,
+             (int)assets::players[clampi(save::data().craft, 0, 5)].skin[save::data().skin].id,
+             (int)state_, (int)finished_, std::min(wave_ + 1, kWaveCount), kWaveCount, wavePhase_, p_[0].hp,
+             (int)p_[0].hp, p_[0].dashT, p_[0].dashCd, p_[0].pos.x, p_[0].pos.y, p_[1].pos.x, p_[1].pos.y,
+             p_[1].hp, (int)p_[1].down, (int)bullets_.size(), pb, eb, (int)enemies_.size(), enemiesLeft(),
+             (int)boss_.alive,
              (int)std::count_if(enemies_.begin(), enemies_.end(),
                                 [](const Enemy& e) { return e.alive && e.st == ES_Charge; }),
-             score_, boss_.st, boss_.pos.x, boss_.pos.y, bossHp01(), pk, (int)waveDrop_);
+             score_, boss_.st, boss_.pos.x, boss_.pos.y, bossHp01(), pk, (int)waveDrop_, (int)versus_, winner_,
+             playerCount_, (int)online_);
     return b;
 }
 
 void World::killPlayerNow() {
-    invuln_ = 0;
-    hp_ = 1;
-    damagePlayer(5);
+    p_[0].invuln = 0;
+    p_[0].hp = 1;
+    damagePlayer(0, 5);
 }
 
-void World::startDash(Vector2 dir) {
+void World::startDash(int slot, Vector2 dir) {
+    Fighter& f = p_[slot];
     float l = std::sqrt(dir.x * dir.x + dir.y * dir.y);
-    if (l < 0.0001f) { dir = {1, 0}; l = 1.0f; }
-    dashDir_ = {dir.x / l, dir.y / l};
-    dashT_ = kDashDur;
-    dashCd_ = kDashCd;
-    invuln_ = std::max(invuln_, kDashDur + 0.14f);
-    ghostTimer_ = 0;
+    if (l < 0.0001f) { dir = {(float)f.face, 0}; l = 1.0f; }
+    f.dashDir = {dir.x / l, dir.y / l};
+    f.dashT = kDashDur;
+    f.dashCd = kDashCd;
+    f.invuln = std::max(f.invuln, kDashDur + 0.14f);
+    f.ghostTimer = 0;
     audio::play(audio::SfxDash, 0.9f, 1.0f);
     for (int i = 0; i < 8; i++) {
         float back = rng_.range(0, 30);
-        addTrail({player_.x - dashDir_.x * back, player_.y - dashDir_.y * back}, dashDir_, pal::kCyan);
+        addTrail({f.pos.x - f.dashDir.x * back, f.pos.y - f.dashDir.y * back}, f.dashDir, pal::kCyan);
     }
 }
 
-void World::updatePlayer(float dt, bool autopilot) {
-    if (playerDeathT_ > 0) {
-        playerDeathT_ -= dt;
+void World::updatePlayer(int slot, float dt, const Ctrl& c, bool autopilot) {
+    Fighter& f = p_[slot];
+    if (!f.active) return;
+
+    if (f.hitFlash > 0) f.hitFlash -= dt;
+    if (f.bombFlash > 0) f.bombFlash -= dt;
+
+    if (f.down) {
+        if (f.deathT > 0) f.deathT -= dt;
+        if (!versus_ && f.respawnT > 0) {
+            f.respawnT -= dt;
+            if (f.respawnT <= 0) respawnPlayer(slot);
+        }
+        f.prevBits = c.bits();
         return;
     }
-    if (invuln_ > 0) invuln_ -= dt;
-    if (dashCd_ > 0) dashCd_ = std::max(0.0f, dashCd_ - dt);
 
-    const Input& in = app().in;
+    if (f.invuln > 0) f.invuln -= dt;
+    if (f.dashCd > 0) f.dashCd = std::max(0.0f, f.dashCd - dt);
+
+    uint16_t bits = c.bits();
+    bool dashHit = (bits & 64) != 0 && (f.prevBits & 64) == 0;
+    bool bombHit = (bits & 32) != 0 && (f.prevBits & 32) == 0;
+    f.prevBits = bits;
+
     Vector2 dir{0, 0};
 
     if (autopilot) {
@@ -540,9 +700,9 @@ void World::updatePlayer(float dt, bool autopilot) {
         Vector2 repulse{0, 0};
         for (const auto& b : bullets_) {
             if (!b.alive) continue;
-            float dx = player_.x - b.pos.x;
+            float dx = f.pos.x - b.pos.x;
             if (dx < -40 || dx > 320) continue;
-            float dy = player_.y - b.pos.y;
+            float dy = f.pos.y - b.pos.y;
             float d2 = dx * dx + dy * dy;
             if (d2 > 210 * 210) continue;
             float d = std::sqrt(d2) + 0.01f;
@@ -551,111 +711,113 @@ void World::updatePlayer(float dt, bool autopilot) {
         }
         for (const auto& e : enemies_) {
             if (!e.alive || (e.st != ES_Charge && e.st != ES_Dash)) continue;
-            float dx = player_.x - e.pos.x, dy = player_.y - e.pos.y;
+            float dx = f.pos.x - e.pos.x, dy = f.pos.y - e.pos.y;
             float d2 = dx * dx + dy * dy;
             if (d2 > 620 * 620) continue;
             float d = std::sqrt(d2) + 0.01f;
             repulse.x += dx / d * (620 - d) * 0.35f;
             repulse.y += dy / d * (620 - d) * 1.1f;
         }
-        float targetY = clampf(player_.y + repulse.y * 0.06f, 320, 980);
+        float targetY = clampf(f.pos.y + repulse.y * 0.06f, 320, 980);
         targetY = lerpf(targetY, 700, 0.35f);
         float targetX = clampf(460 + repulse.x * 0.02f, 240, 900);
         // 自动演示也要瞄准：否则永远打不到不同高度的敌机，波次卡死
         float aimY = -1e9f, bestD = 1e9f;
         for (const auto& e : enemies_) {
             if (!e.alive || e.delay > 0) continue;
-            float d = std::fabs(e.pos.y - player_.y);
+            float d = std::fabs(e.pos.y - f.pos.y);
             if (d < bestD) { bestD = d; aimY = e.pos.y; }
         }
         if (boss_.alive) aimY = boss_.pos.y;
         if (aimY > -1e8f) targetY = clampf(lerpf(aimY, targetY, 0.25f), 320, 980);
         autoTarget_ = {targetX, targetY};
 
-        Vector2 d{autoTarget_.x - player_.x, autoTarget_.y - player_.y};
+        Vector2 d{autoTarget_.x - f.pos.x, autoTarget_.y - f.pos.y};
         float l = std::sqrt(d.x * d.x + d.y * d.y);
         if (l > 2) { d.x /= l; d.y /= l; } else { d = {0, 0}; }
         dir = d;
 
         // 演示也会用闪身：站在锁定线上就横向闪开
-        if (dashT_ <= 0 && dashCd_ <= 0) {
+        if (f.dashT <= 0 && f.dashCd <= 0) {
             for (const auto& e : enemies_) {
                 if (!e.alive || e.st != ES_Charge) continue;
-                Vector2 rel{player_.x - e.pos.x, player_.y - e.pos.y};
+                Vector2 rel{f.pos.x - e.pos.x, f.pos.y - e.pos.y};
                 float along = rel.x * e.lockDir.x + rel.y * e.lockDir.y;
                 float perp = std::fabs(-rel.x * e.lockDir.y + rel.y * e.lockDir.x);
                 if (along > 0 && perp < 80.0f) {
                     Vector2 pd{-e.lockDir.y, e.lockDir.x};
                     if (rel.x * pd.x + rel.y * pd.y < 0) { pd.x = -pd.x; pd.y = -pd.y; }
-                    startDash(pd);
+                    startDash(slot, pd);
                     break;
                 }
             }
         }
     } else {
-        if (in.down(KEY_LEFT) || in.down(KEY_A)) dir.x -= 1;
-        if (in.down(KEY_RIGHT) || in.down(KEY_D)) dir.x += 1;
-        if (in.down(KEY_UP) || in.down(KEY_W)) dir.y -= 1;
-        if (in.down(KEY_DOWN) || in.down(KEY_S)) dir.y += 1;
+        if (c.left) dir.x -= 1;
+        if (c.right) dir.x += 1;
+        if (c.up) dir.y -= 1;
+        if (c.down) dir.y += 1;
         if (dir.x != 0 && dir.y != 0) {
             dir.x *= 0.7071f;
             dir.y *= 0.7071f;
         }
-        // 鼠标操控：按住左键时跟随
-        if (in.lmb && in.mouseMoved) {
+        // 鼠标操控（仅单人）：按住左键时跟随光标
+        if (slot == 0 && playerCount_ == 1 && !online_ && app().in.lmb && app().in.mouseMoved) {
             float k = 1.0f - std::exp(-dt * 18.0f);
-            player_.x = lerpf(player_.x, in.mouse.x, k);
-            player_.y = lerpf(player_.y, in.mouse.y, k);
+            f.pos.x = lerpf(f.pos.x, app().in.mouse.x, k);
+            f.pos.y = lerpf(f.pos.y, app().in.mouse.y, k);
         }
     }
 
-    // ---- 闪身：Shift + 方向（无方向则朝机头 +X）
-    if (!autopilot && dashT_ <= 0 && dashCd_ <= 0) {
-        bool shiftDown = in.down(KEY_LEFT_SHIFT) || in.down(KEY_RIGHT_SHIFT);
-        bool shiftHit = in.pressed(KEY_LEFT_SHIFT) || in.pressed(KEY_RIGHT_SHIFT);
-        bool dirHit = in.pressed(KEY_LEFT) || in.pressed(KEY_RIGHT) || in.pressed(KEY_UP) || in.pressed(KEY_DOWN) ||
-                      in.pressed(KEY_A) || in.pressed(KEY_D) || in.pressed(KEY_W) || in.pressed(KEY_S);
-        bool wantDash = (shiftDown && dirHit) || (shiftHit && (dir.x != 0 || dir.y != 0));
-        if (wantDash) startDash(dir);
-    }
+    // ---- 闪身
+    if (!autopilot && dashHit && f.dashT <= 0 && f.dashCd <= 0) startDash(slot, dir);
 
-    if (dashT_ > 0) {
-        dashT_ = std::max(0.0f, dashT_ - dt);
-        player_.x += dashDir_.x * kDashSpeed * dt;
-        player_.y += dashDir_.y * kDashSpeed * dt;
-        ghostTimer_ -= dt;
-        if (ghostTimer_ <= 0) {
-            ghostTimer_ = 0.028f;
-            ghosts_.push_back({player_, playerPose_, 0.30f, 0.30f});
+    if (f.dashT > 0) {
+        f.dashT = std::max(0.0f, f.dashT - dt);
+        f.pos.x += f.dashDir.x * kDashSpeed * dt;
+        f.pos.y += f.dashDir.y * kDashSpeed * dt;
+        f.ghostTimer -= dt;
+        if (f.ghostTimer <= 0) {
+            f.ghostTimer = 0.028f;
+            f.ghosts.push_back({f.pos, f.pose, 0.30f, 0.30f, slot});
         }
     } else {
-        player_.x += dir.x * kPlayerSpeed * dt;
-        player_.y += dir.y * kPlayerSpeed * dt;
+        f.pos.x += dir.x * kPlayerSpeed * dt;
+        f.pos.y += dir.y * kPlayerSpeed * dt;
     }
-    player_.x = clampf(player_.x, kPlayerMinX, kPlayerMaxX);
-    player_.y = clampf(player_.y, 300, VH - 70);
 
-    playerVel_ = {dir.x * kPlayerSpeed, dir.y * kPlayerSpeed};
+    if (versus_) {
+        // 对战：各守半场，中间留一条缓冲带
+        if (slot == 0) f.pos.x = clampf(f.pos.x, 110, 900);
+        else f.pos.x = clampf(f.pos.x, 1020, VW - 110);
+    } else {
+        f.pos.x = clampf(f.pos.x, kPlayerMinX, kPlayerMaxX);
+    }
+    f.pos.y = clampf(f.pos.y, 300, VH - 70);
+
+    f.vel = {dir.x * kPlayerSpeed, dir.y * kPlayerSpeed};
 
     // 姿态 = 运动的结果：用真实位移反推垂直速度（键鼠 / 闪身一致）
     if (dt > 0.0001f) {
-        float vyPx = (player_.y - playerLastY_) / dt;
+        float vyPx = (f.pos.y - f.lastY) / dt;
         float vyN = clampf(-vyPx / kPlayerSpeed, -1.0f, 1.0f);
-        playerVyN_ = lerpf(playerVyN_, vyN, 1.0f - std::exp(-dt * 18.0f));
+        f.vyN = lerpf(f.vyN, vyN, 1.0f - std::exp(-dt * 18.0f));
     }
-    playerLastY_ = player_.y;
-    pose::Update(playerPose_, pose::kPlayer, playerVyN_, dt);
+    f.lastY = f.pos.y;
+    pose::Update(f.pose, pose::kPlayer, f.vyN, dt);
 
     // 射击
-    bool firing = autopilot || in.down(save::data().keyFire) || in.down(KEY_SPACE) || in.lmb;
-    fireCd_ -= dt;
-    if (firing && fireCd_ <= 0) {
-        fireCd_ = 0.115f;
-        int lvl = clampi(weapon_, 1, 4);
-        float bx = player_.x + 96;
+    bool firing = autopilot || c.fire;
+    if (slot == 0 && playerCount_ == 1 && !online_ && app().in.lmb) firing = true;
+    f.fireCd -= dt;
+    if (firing && f.fireCd <= 0) {
+        f.fireCd = 0.115f;
+        int lvl = clampi(f.weapon, 1, 4);
+        float bx = f.pos.x + 96.0f * f.face;
+        Color bc = (slot == 1) ? Color{255, 196, 96, 255} : Color{140, 245, 255, 255};
         audio::play(audio::SfxShot, 0.28f, 0.94f + rng_.range(0, 0.12f));
         auto shot = [&](float oy, float vy) {
-            addBullet({bx, player_.y + oy}, {1980.0f, vy}, 7.0f, Color{140, 245, 255, 255}, 2, 2.0f, false);
+            addBullet({bx, f.pos.y + oy}, {1980.0f * f.face, vy}, 7.0f, bc, 2, 2.0f, false, false, slot);
         };
         if (lvl == 1) shot(0, 0);
         else if (lvl == 2) { shot(-16, 0); shot(16, 0); }
@@ -664,17 +826,25 @@ void World::updatePlayer(float dt, bool autopilot) {
     }
 
     // 爆弹
-    if (!autopilot && (in.pressed(save::data().keyBomb) || in.pressed(KEY_L))) {
-        if (bombs_ > 0) {
-            bombs_--;
-            bombFlash_ = 0.9f;
-            shake_ = std::max(shake_, 1.0f);
-            audio::play(audio::SfxBomb, 1.0f, 1.0f);
-            for (auto& b : bullets_) {
-                if (!b.alive || !b.hostile) continue;
-                addHitSpark(b.pos, Color{200, 240, 255, 255});
-                b.alive = false;
+    if (!autopilot && bombHit && f.bombs > 0) {
+        f.bombs--;
+        f.bombFlash = 0.9f;
+        shake_ = std::max(shake_, 1.0f);
+        audio::play(audio::SfxBomb, 1.0f, 1.0f);
+        for (auto& b : bullets_) {
+            if (!b.alive) continue;
+            if (versus_) {
+                if (b.hostile || b.owner == slot) continue;
+            } else if (!b.hostile) {
+                continue;
             }
+            addHitSpark(b.pos, Color{200, 240, 255, 255});
+            b.alive = false;
+        }
+        if (versus_) {
+            int other = 1 - slot;
+            if (p_[other].active) damagePlayerPvp(other, 12.0f);
+        } else {
             for (size_t i = 0; i < enemies_.size(); i++) {
                 Enemy& e = enemies_[i];
                 if (!e.alive || e.delay > 0) continue;
@@ -688,7 +858,6 @@ void World::updatePlayer(float dt, bool autopilot) {
             }
         }
     }
-    if (bombFlash_ > 0) bombFlash_ -= dt;
 }
 
 // ---------------------------------------------------------------- 子弹
@@ -731,16 +900,36 @@ void World::updateBullets(float dt) {
         }
     }
 
-    // 敌弹 → 玩家
-    if (playerDeathT_ <= 0 && invuln_ <= 0 && state_ == WorldState::Playing) {
+    // 玩家弹 → 对方（对战）
+    if (versus_) {
         for (auto& b : bullets_) {
-            if (!b.alive || !b.hostile) continue;
-            float dx = b.pos.x - player_.x, dy = b.pos.y - player_.y;
+            if (!b.alive || b.hostile) continue;
+            int t = 1 - b.owner;
+            Fighter& f = p_[t];
+            if (!f.active || f.down || f.invuln > 0) continue;
+            float dx = b.pos.x - f.pos.x, dy = b.pos.y - f.pos.y;
             float rr = kPlayerR + b.r * 0.72f;
             if (dx * dx + dy * dy < rr * rr) {
                 b.alive = false;
-                damagePlayer(b.dmg);
-                break;
+                damagePlayerPvp(t, kDmgPvp);
+            }
+        }
+    } else {
+        // 敌弹 → 玩家（两人都会被击中，各自吃自己的伤害）
+        if (state_ == WorldState::Playing) {
+            for (auto& b : bullets_) {
+                if (!b.alive || !b.hostile) continue;
+                for (int s = 0; s < playerCount_; s++) {
+                    Fighter& f = p_[s];
+                    if (f.down || f.invuln > 0) continue;
+                    float dx = b.pos.x - f.pos.x, dy = b.pos.y - f.pos.y;
+                    float rr = kPlayerR + b.r * 0.72f;
+                    if (dx * dx + dy * dy < rr * rr) {
+                        b.alive = false;
+                        damagePlayer(s, b.dmg);
+                        break;
+                    }
+                }
             }
         }
     }
@@ -826,7 +1015,8 @@ void World::updateEnemyPose(Enemy& e, float dt) {
 }
 
 void World::enemyShoot(const Enemy& e) {
-    Vector2 aim{player_.x - e.pos.x, player_.y - e.pos.y};
+    Vector2 tgt = aimTarget(e.pos);
+    Vector2 aim{tgt.x - e.pos.x, tgt.y - e.pos.y};
     float base = std::atan2(aim.y, aim.x);
     switch (e.cls) {
         case EC_C:
@@ -843,7 +1033,8 @@ void World::enemyShoot(const Enemy& e) {
 }
 
 void World::beginCharge(Enemy& e) {
-    Vector2 d{player_.x - e.pos.x, player_.y - e.pos.y};
+    Vector2 tgt = aimTarget(e.pos);
+    Vector2 d{tgt.x - e.pos.x, tgt.y - e.pos.y};
     float l = std::sqrt(d.x * d.x + d.y * d.y);
     if (l < 1.0f) { d = {-1, 0}; l = 1.0f; }
     e.lockDir = {d.x / l, d.y / l};
@@ -903,7 +1094,8 @@ void World::updateB(Enemy& e, float dt) {
                 e.tell -= dt;
                 if (e.tell <= 0) {
                     // 大炮弹：慢、大、1/4 伤害
-                    Vector2 aim{player_.x - e.pos.x, player_.y - e.pos.y};
+                    Vector2 tgt = aimTarget(e.pos);
+                    Vector2 aim{tgt.x - e.pos.x, tgt.y - e.pos.y};
                     float base = std::atan2(aim.y, aim.x);
                     addBullet({e.pos.x - 50, e.pos.y}, {std::cos(base) * 330, std::sin(base) * 330}, 30,
                               Color{255, 128, 40, 255}, 1, kDmgShell, true, true);
@@ -947,7 +1139,7 @@ void World::updateA(Enemy& e, float dt) {
                           e.home.y + std::sin(e.t * 0.90f + e.phase * 1.3f) * 84.0f};
             OrbitTo(e.pos, orbit, dt, 4.2f);
             e.specialT -= dt;
-            if (e.specialT <= 0 && player_.x < e.pos.x - 260.0f) beginCharge(e);
+            if (e.specialT <= 0 && p_[nearestPlayer(e.pos)].pos.x < e.pos.x - 260.0f) beginCharge(e);
             break;
         }
         case ES_Charge: {
@@ -968,11 +1160,15 @@ void World::updateA(Enemy& e, float dt) {
             e.pos.y += e.vel.y * dt;
             for (int i = 0; i < 2; i++) addTrail(e.pos, e.lockDir, Color{255, 120, 90, 255});
 
-            float dx = e.pos.x - player_.x, dy = e.pos.y - player_.y;
-            if (dx * dx + dy * dy < 92.0f * 92.0f && playerDeathT_ <= 0) {
-                damagePlayer(kDmgRam);
-                ramExplode(e);
-                return;
+            for (int s = 0; s < playerCount_; s++) {
+                Fighter& f = p_[s];
+                if (f.down) continue;
+                float dx = e.pos.x - f.pos.x, dy = e.pos.y - f.pos.y;
+                if (dx * dx + dy * dy < 92.0f * 92.0f) {
+                    damagePlayer(s, kDmgRam);
+                    ramExplode(e);
+                    return;
+                }
             }
             if (e.pos.x < -320 || e.pos.y < -340 || e.pos.y > VH + 340 || e.stateT > 2.6f) {
                 // 冲空了：不按原路折返（那样会背朝玩家倒着飞回来），
@@ -1031,7 +1227,8 @@ bool World::enemiesAllDead() const {
 
 // ---------------------------------------------------------------- Boss
 void World::bossShoot(int pattern) {
-    Vector2 aim{player_.x - boss_.pos.x, player_.y - boss_.pos.y};
+    Vector2 tgt = aimTarget(boss_.pos);
+    Vector2 aim{tgt.x - boss_.pos.x, tgt.y - boss_.pos.y};
     float base = std::atan2(aim.y, aim.x);
     switch (pattern) {
         case 0:  // 三向
@@ -1051,7 +1248,8 @@ void World::bossShoot(int pattern) {
 }
 
 void World::beginBossCharge() {
-    Vector2 d{player_.x - boss_.pos.x, player_.y - boss_.pos.y};
+    Vector2 tgt = aimTarget(boss_.pos);
+    Vector2 d{tgt.x - boss_.pos.x, tgt.y - boss_.pos.y};
     float l = std::sqrt(d.x * d.x + d.y * d.y);
     if (l < 1.0f) { d = {-1, 0}; l = 1.0f; }
     boss_.lockDir = {d.x / l, d.y / l};
@@ -1104,8 +1302,12 @@ void World::updateBoss(float dt) {
             boss_.pos.x += boss_.vel.x * dt;
             boss_.pos.y += boss_.vel.y * dt;
             for (int i = 0; i < 3; i++) addTrail(boss_.pos, boss_.lockDir, Color{255, 120, 90, 255});
-            float dx = boss_.pos.x - player_.x, dy = boss_.pos.y - player_.y;
-            if (dx * dx + dy * dy < 230.0f * 230.0f && playerDeathT_ <= 0) damagePlayer(kDmgRam);
+            for (int s = 0; s < playerCount_; s++) {
+                Fighter& f = p_[s];
+                if (f.down) continue;
+                float dx = boss_.pos.x - f.pos.x, dy = boss_.pos.y - f.pos.y;
+                if (dx * dx + dy * dy < 230.0f * 230.0f) damagePlayer(s, kDmgRam);
+            }
             if (boss_.pos.x < -460 || boss_.pos.y < -460 || boss_.pos.y > VH + 460 || boss_.stateT > 2.8f) {
                 // 不原路折返（那会让这个大家伙背朝玩家倒着飞回来）：
                 // 冲撞就是一路冲出画面，再从右侧重新压进来，和冲锋机一个路子。
@@ -1166,10 +1368,12 @@ void World::updateParticles(float dt) {
                                         [](const Particle& p) { return !p.alive; }),
                          particles_.end());
 
-    for (auto& g : ghosts_) g.life -= dt;
-    if (!ghosts_.empty())
-        ghosts_.erase(std::remove_if(ghosts_.begin(), ghosts_.end(), [](const Ghost& g) { return g.life <= 0; }),
-                      ghosts_.end());
+    for (int i = 0; i < kMaxPlayers; i++) {
+        auto& gs = p_[i].ghosts;
+        for (auto& g : gs) g.life -= dt;
+        if (!gs.empty())
+            gs.erase(std::remove_if(gs.begin(), gs.end(), [](const Ghost& g) { return g.life <= 0; }), gs.end());
+    }
 }
 
 void World::updatePickups(float dt) {
@@ -1177,11 +1381,14 @@ void World::updatePickups(float dt) {
         if (!p.alive) continue;
         p.t += dt;
 
+        int tgt = nearestPlayer(p.pos);
+        Fighter& f = p_[tgt];
+
         // 出场先按初速弹向玩家，0.22s 后打开弱磁吸：
         // 敌机全在右半场、玩家上限 x=1150，不吸的话道具永远停在够不到的地方。
-        bool magnetOn = (p.t > 0.22f) && playerDeathT_ <= 0 && state_ == WorldState::Playing;
+        bool magnetOn = (p.t > 0.22f) && !f.down && state_ == WorldState::Playing;
         if (magnetOn) {
-            Vector2 d{player_.x - p.pos.x, player_.y - p.pos.y};
+            Vector2 d{f.pos.x - p.pos.x, f.pos.y - p.pos.y};
             float l = std::sqrt(d.x * d.x + d.y * d.y);
             if (l > 1.0f) {
                 const float acc = 380.0f;
@@ -1206,15 +1413,22 @@ void World::updatePickups(float dt) {
         p.pos.y += p.vel.y * dt;
 
         if (p.pos.x < -120 || p.t > 9.0f) p.alive = false;
-        if (playerDeathT_ > 0 || state_ != WorldState::Playing) continue;
-        float dx = p.pos.x - player_.x, dy = p.pos.y - player_.y;
-        if (dx * dx + dy * dy < 78 * 78) {
-            p.alive = false;
-            audio::play(audio::SfxPickup, 0.7f, 1.0f);
-            if (p.kind == 0) weapon_ = clampi(weapon_ + 1, 1, 4);
-            else if (p.kind == 1) bombs_ = clampi(bombs_ + 1, 0, 5);
-            else hp_ = std::min(kPlayerMaxHp, hp_ + 35.0f);
-            score_ += 200;
+        if (state_ != WorldState::Playing) continue;
+
+        // 谁碰到归谁：两人的磁吸都指向最近的玩家，但最终判定看各自的机身
+        for (int s = 0; s < playerCount_; s++) {
+            Fighter& g = p_[s];
+            if (g.down) continue;
+            float dx = p.pos.x - g.pos.x, dy = p.pos.y - g.pos.y;
+            if (dx * dx + dy * dy < 78 * 78) {
+                p.alive = false;
+                audio::play(audio::SfxPickup, 0.7f, 1.0f);
+                if (p.kind == 0) g.weapon = clampi(g.weapon + 1, 1, 4);
+                else if (p.kind == 1) g.bombs = clampi(g.bombs + 1, 0, 5);
+                else g.hp = std::min(kPlayerMaxHp, g.hp + 35.0f);
+                score_ += 200;
+                break;
+            }
         }
     }
     if (pickups_.size() > 12)
@@ -1224,7 +1438,7 @@ void World::updatePickups(float dt) {
 
 // ---------------------------------------------------------------- 波次
 void World::updateWave(float dt) {
-    if (state_ != WorldState::Playing) return;
+    if (state_ != WorldState::Playing || versus_) return;
 
     if (bossPending_) {
         bossDelay_ -= dt;
@@ -1248,7 +1462,10 @@ void World::updateWave(float dt) {
             // 关键规则：必须打完本波所有敌人（含 Boss）才允许进入下一波
             if (!bossPending_ && !boss_.alive && enemiesAllDead()) {
                 // 兜底：万一整波一颗都没掉（例如全靠冲撞撞死），清场时补一颗
-                if (!waveDrop_) spawnPickup({1060.0f, clampf(player_.y, 320.0f, VH - 160.0f)}, 0);
+                if (!waveDrop_) {
+                    float py = p_[nearestPlayer({1060.0f, VH * 0.5f})].pos.y;
+                    spawnPickup({1060.0f, clampf(py, 320.0f, VH - 160.0f)}, 0);
+                }
                 wavePhase_ = WP_Gap;
                 waveT_ = 2.0f;
                 showBanner("WAVE CLEAR", 1.5f);
@@ -1276,7 +1493,7 @@ void World::updateWave(float dt) {
 }
 
 // ---------------------------------------------------------------- 主更新
-void World::update(float dt, bool autopilot) {
+void World::step(float dt, const TickInput& in, bool autopilot) {
     elapsed_ += dt;
     stateT_ += dt;
     if (bannerT_ > 0) bannerT_ -= dt;
@@ -1292,11 +1509,12 @@ void World::update(float dt, bool autopilot) {
     bgStorm_.setSpeed(340.0f);
     bgStorm_.update(dt);
 
-    // 终局：雷暴压上来
-    float stormTarget = (wave_ >= kWaveCount - 1 && state_ == WorldState::Playing) ? 1.0f : stormMix_;
+    // 终局：雷暴压上来（对战不开雷暴，画面保持干净）
+    float stormTarget = (!versus_ && wave_ >= kWaveCount - 1 && state_ == WorldState::Playing) ? 1.0f : stormMix_;
     stormMix_ = approach(stormMix_, stormTarget, dt * 0.55f);
 
-    updatePlayer(dt, autopilot);
+    for (int i = 0; i < playerCount_; i++)
+        updatePlayer(i, dt, in.p[i], autopilot && i == 0);
 
     updateBullets(dt);
     updateEnemies(dt);
@@ -1306,7 +1524,8 @@ void World::update(float dt, bool autopilot) {
     updateWave(dt);
 
     if (state_ == WorldState::Cleared) {
-        if (stateT_ > 2.6f && !finished_) finished_ = true;
+        float need = versus_ ? 2.2f : 2.6f;
+        if (stateT_ > need && !finished_) finished_ = true;
     } else if (state_ == WorldState::Failed) {
         if (stateT_ > 1.6f && !finished_) finished_ = true;
     }
@@ -1344,26 +1563,29 @@ void World::drawBackground() {
         drawShadow(e.pos, span * 0.75f, span * 0.3f, 0.9f);
     }
     if (boss_.alive) drawShadow(boss_.pos, 620, 240, 1.0f);
-    if (playerDeathT_ <= 0) drawShadow(player_, kPlayerSpan * 0.75f, kPlayerSpan * 0.3f, 1.0f);
+    for (int i = 0; i < playerCount_; i++)
+        if (!p_[i].down) drawShadow(p_[i].pos, kPlayerSpan * 0.75f, kPlayerSpan * 0.3f, 1.0f);
     rlPopMatrix();
 }
 
 void World::draw3D() {
     Vector2 sh = shakeOffset();
-    float px = player_.x + sh.x, py = player_.y + sh.y;
 
-    // 闪身残影
-    for (auto& g : ghosts_) {
-        float k = clampf(g.life / g.maxLife, 0, 1);
-        assets::drawCraft(assets::players[save::data().craft], g.pos.x + sh.x, g.pos.y + sh.y, save::data().skin,
-                          g.pose, kPlayerSpan, WithAlpha(pal::kCyan, 0.30f * k), 1);
-    }
-
-    if (playerDeathT_ <= 0) {
-        bool blink = (invuln_ > 0) && (((int)(GetTime() * 14)) % 2 == 0);
+    // 玩家机体 + 闪身残影
+    for (int i = 0; i < playerCount_; i++) {
+        Fighter& f = p_[i];
+        Color trailCol = (i == 1) ? pal::kGold : pal::kCyan;
+        for (auto& g : f.ghosts) {
+            float k = clampf(g.life / g.maxLife, 0, 1);
+            assets::drawCraft(assets::players[clampi(f.craft, 0, 5)], g.pos.x + sh.x, g.pos.y + sh.y, f.skin,
+                              g.pose, kPlayerSpan, WithAlpha(trailCol, 0.30f * k), f.face);
+        }
+        if (f.down) continue;
+        bool blink = (f.invuln > 0) && (((int)(GetTime() * 14)) % 2 == 0);
         Color tint = blink ? WithAlpha(WHITE, 0.45f) : WHITE;
-        assets::drawCraft(assets::players[save::data().craft], px, py, save::data().skin, playerPose_, kPlayerSpan,
-                          tint, 1);
+        if (f.hitFlash > 0) tint = Color{255, 232, 210, 255};
+        assets::drawCraft(assets::players[clampi(f.craft, 0, 5)], f.pos.x + sh.x, f.pos.y + sh.y, f.skin, f.pose,
+                          kPlayerSpan, tint, f.face);
     }
 
     for (auto& e : enemies_) {
@@ -1544,20 +1766,36 @@ void World::drawEnemyBars() {
 }
 
 void World::drawFore() {
-    // 命中点标记
-    if (playerDeathT_ <= 0) {
-        float a = (invuln_ > 0) ? 0.25f : 0.55f;
-        DrawCircle((int)player_.x, (int)player_.y, 13.0f, WithAlpha(pal::kCyan, a * 0.35f));
-        DrawCircle((int)player_.x, (int)player_.y, 4.0f, WithAlpha(Color{240, 255, 255, 255}, a + 0.3f));
+    // 对战：中线虚线，提示两人各守半场
+    if (versus_) {
+        for (float y = 280; y < VH - 100; y += 44) {
+            DrawRectangle((int)(VW * 0.5f) - 1, (int)y, 2, 24, WithAlpha(WHITE, 0.07f));
+        }
     }
 
-    // 闪身拖影（2D 速度线）
-    if (dashT_ > 0) {
-        for (int i = 0; i < 5; i++) {
-            float oy = (i - 2) * 34.0f;
-            Vector2 a{player_.x - dashDir_.x * 150.0f, player_.y - dashDir_.y * 150.0f + oy};
-            Vector2 b{player_.x - dashDir_.x * 30.0f, player_.y - dashDir_.y * 30.0f + oy};
-            ThickLine(a, b, 4.0f, WithAlpha(pal::kCyan, 0.3f));
+    for (int s = 0; s < playerCount_; s++) {
+        Fighter& f = p_[s];
+        if (f.down) continue;
+
+        // 命中点标记
+        float a = (f.invuln > 0) ? 0.25f : 0.55f;
+        DrawCircle((int)f.pos.x, (int)f.pos.y, 13.0f, WithAlpha(pal::kCyan, a * 0.35f));
+        DrawCircle((int)f.pos.x, (int)f.pos.y, 4.0f, WithAlpha(Color{240, 255, 255, 255}, a + 0.3f));
+
+        // 闪身拖影（2D 速度线）
+        if (f.dashT > 0) {
+            for (int i = 0; i < 5; i++) {
+                float oy = (i - 2) * 34.0f;
+                Vector2 a0{f.pos.x - f.dashDir.x * 150.0f, f.pos.y - f.dashDir.y * 150.0f + oy};
+                Vector2 b0{f.pos.x - f.dashDir.x * 30.0f, f.pos.y - f.dashDir.y * 30.0f + oy};
+                ThickLine(a0, b0, 4.0f, WithAlpha(pal::kCyan, 0.3f));
+            }
+        }
+
+        // P1 / P2 头顶标识：两人同屏时最容易看混
+        if (playerCount_ > 1) {
+            Color tc = (s == 1) ? pal::kGold : pal::kCyan;
+            ui::TextC(s == 0 ? "1P" : "2P", f.pos.x, f.pos.y - 104, 22, WithAlpha(tc, 0.85f), true);
         }
     }
 
@@ -1567,89 +1805,134 @@ void World::drawFore() {
     drawPickups();
     drawEnemyBars();
 
-    if (bombFlash_ > 0) {
-        DrawCircle((int)player_.x, (int)player_.y, 900.0f * (1.0f - bombFlash_ / 0.9f),
-                   WithAlpha(Color{180, 240, 255, 255}, bombFlash_ * 0.5f));
+    for (int s = 0; s < playerCount_; s++) {
+        Fighter& f = p_[s];
+        if (f.bombFlash > 0) {
+            DrawCircle((int)f.pos.x, (int)f.pos.y, 900.0f * (1.0f - f.bombFlash / 0.9f),
+                       WithAlpha(Color{180, 240, 255, 255}, f.bombFlash * 0.5f));
+        }
     }
+}
+
+// 单人 / 组队共用的玩家面板：装甲、爆弹、闪避冷却
+void World::drawPlayerHudPanel(int slot, Rectangle r, bool compact) {
+    const Fighter& f = p_[slot];
+    Color accent = (slot == 1) ? pal::kGold : pal::kCyan;
+    ui::Panel(r, WithAlpha(pal::kPanelBg, 0.58f), WithAlpha(accent, 0.26f), 12, 1.5f);
+
+    char buf[64];
+    ui::TextOutline(slot == 0 ? "1P" : "2P", r.x + 16, r.y + 8, 24, WithAlpha(accent, 0.95f),
+                    WithAlpha(BLACK, 0.6f), true);
+    ui::TextOutline("装甲", r.x + 66, r.y + 12, 18, WithAlpha(pal::kText, 0.85f), WithAlpha(BLACK, 0.6f));
+
+    float ratio = clampf(f.hp / kPlayerMaxHp, 0, 1);
+    Color hpCol = ratio > 0.6f ? pal::kCyan : (ratio > 0.3f ? pal::kGold : pal::kDanger);
+    snprintf(buf, sizeof buf, "%d", (int)std::ceil(f.hp));
+    ui::TextR(buf, r.x + r.width - 16, r.y + 4, 26, WithAlpha(hpCol, 0.95f), true);
+
+    float bx = r.x + 16, bw = r.width - 32;
+    DrawRectangle((int)bx - 3, (int)r.y + 37, (int)bw + 6, 22, WithAlpha(BLACK, 0.55f));
+    SegBar(bx, r.y + 40, bw, 16, ratio, 16, hpCol, WithAlpha(Color{40, 52, 66, 255}, 0.85f));
+    DrawRectangle((int)bx, (int)r.y + 40, (int)(bw * ratio), 3, WithAlpha(WHITE, 0.35f));
+
+    // 爆弹
+    ui::TextOutline("爆弹", r.x + 16, r.y + 72, 18, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.6f));
+    for (int i = 0; i < f.bombs; i++) {
+        float cx = r.x + r.width - 20 - i * 28, cy = r.y + 84;
+        DrawCircle((int)cx, (int)(cy + 4), 9, pal::kGold);
+        DrawRectangle((int)cx - 3, (int)cy - 14, 6, 9, WithAlpha(pal::kGold, 0.9f));
+        DrawCircle((int)cx, (int)cy - 14, 3, WithAlpha(Color{255, 240, 200, 255}, 0.9f));
+    }
+
+    // 闪避
+    float dr = clampf(1.0f - f.dashCd / kDashCd, 0, 1);
+    ui::TextOutline("闪避", r.x + 16, r.y + 104, 18, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.6f));
+    if (dr >= 0.999f) {
+        float p = ui::Pulse(2.4f);
+        ui::TextR("就绪", r.x + r.width - 16, r.y + 104, 17, WithAlpha(pal::kCyan, 0.55f + 0.45f * p), true);
+    }
+    DrawRectangle((int)bx, (int)r.y + 132, (int)bw, 7, WithAlpha(Color{34, 44, 58, 255}, 0.9f));
+    DrawRectangle((int)bx, (int)r.y + 132, (int)(bw * dr), 7,
+                  WithAlpha(dr >= 0.999f ? pal::kCyan : pal::kDim, 0.95f));
+
+    if (f.down) {
+        DrawRectangle((int)r.x + 3, (int)r.y + 3, (int)r.width - 6, (int)r.height - 6,
+                      WithAlpha(Color{8, 12, 18, 255}, 0.72f));
+        ui::TextC("损毁", r.x + r.width * 0.5f, r.y + 38, 30, WithAlpha(pal::kDanger, 0.9f), true);
+        if (!versus_) {
+            snprintf(buf, sizeof buf, "重生  %.1f", std::max(0.0f, f.respawnT));
+            ui::TextC(buf, r.x + r.width * 0.5f, r.y + 86, 22, WithAlpha(pal::kDim, 0.9f));
+        }
+    }
+}
+
+// 对战 HUD：左右各一块装甲，中间只留 VS
+void World::drawDuelHud() {
+    drawPlayerHudPanel(0, {36, 14, 400, 158}, true);
+    drawPlayerHudPanel(1, {VW - 436, 14, 400, 158}, true);
+    float p = ui::Pulse(1.4f);
+    ui::TextC("VS", VW * 0.5f, 22, 52, WithAlpha(pal::kGold, 0.6f + 0.3f * p), true);
+    const char* hint = "击破对方战机";
+    float hw = ui::TextW(hint, 22, true) + 56;
+    ui::Panel({VW * 0.5f - hw * 0.5f, VH - 92, hw, 48}, WithAlpha(pal::kPanelBg, 0.65f),
+              WithAlpha(pal::kGold, 0.35f), 8, 1.5f);
+    ui::TextC(hint, VW * 0.5f, VH - 80, 22, WithAlpha(pal::kDim, 0.9f));
 }
 
 void World::drawHud() {
     DrawRectangleGradientV(0, 0, (int)VW, 250, WithAlpha(BLACK, 0.55f), BLANK);
     DrawRectangleGradientV(0, (int)(VH - 170), (int)VW, 170, BLANK, WithAlpha(BLACK, 0.38f));
     // 右上 / 左下 HUD 的底色块：云层太亮，纯文字读不清
-    DrawRectangleGradientH((int)(VW - 520), 0, 520, 200, BLANK, WithAlpha(BLACK, 0.42f));
+    DrawRectangleGradientH((int)(VW - 520), 0, 520, 350, BLANK, WithAlpha(BLACK, 0.42f));
     DrawRectangleGradientH(0, (int)(VH - 150), 300, 150, WithAlpha(BLACK, 0.42f), BLANK);
 
     char buf[64];
 
-    // ---- 分数
-    ui::Text("SCORE", 48, 30, 22, WithAlpha(pal::kCyan, 0.95f), true);
-    snprintf(buf, sizeof buf, "%07d", score_);
-    ui::TextOutline(buf, 46, 58, 52, pal::kText, WithAlpha(BLACK, 0.55f), true);
-    snprintf(buf, sizeof buf, "HI %07d", std::max(save::data().hiScore, score_));
-    ui::TextOutline(buf, 48, 122, 22, WithAlpha(pal::kDim, 0.95f), WithAlpha(BLACK, 0.5f));
-    if (combo_ > 1) {
-        float pop = comboT_ > 2.3f ? 1.0f + (comboT_ - 2.3f) * 0.9f : 1.0f;
-        snprintf(buf, sizeof buf, "COMBO x%d", combo_);
-        ui::TextOutline(buf, 48, 160, (int)(26 * pop), pal::kGold, WithAlpha(BLACK, 0.5f), true);
+    // ---- 分数（对战不看分数，避免和左上角的 1P 面板打架）
+    if (!versus_) {
+        ui::Text("SCORE", 48, 30, 22, WithAlpha(pal::kCyan, 0.95f), true);
+        snprintf(buf, sizeof buf, "%07d", score_);
+        ui::TextOutline(buf, 46, 58, 52, pal::kText, WithAlpha(BLACK, 0.55f), true);
+        snprintf(buf, sizeof buf, "HI %07d", std::max(save::data().hiScore, score_));
+        ui::TextOutline(buf, 48, 122, 22, WithAlpha(pal::kDim, 0.95f), WithAlpha(BLACK, 0.5f));
+        if (combo_ > 1) {
+            float pop = comboT_ > 2.3f ? 1.0f + (comboT_ - 2.3f) * 0.9f : 1.0f;
+            snprintf(buf, sizeof buf, "COMBO x%d", combo_);
+            ui::TextOutline(buf, 48, 160, (int)(26 * pop), pal::kGold, WithAlpha(BLACK, 0.5f), true);
+        }
     }
 
-    // ---- 装甲（玩家血量）
-    float rx = VW - 60;
-    float barW = 320;
-    float bx = rx - barW;
-    float ratio = hp01();
-    Color hpCol = ratio > 0.6f ? pal::kCyan : (ratio > 0.3f ? pal::kGold : pal::kDanger);
-
-    Rectangle hudPanel{bx - 26, 10, barW + 52, 182};
-    ui::Panel(hudPanel, WithAlpha(pal::kPanelBg, 0.55f), WithAlpha(pal::kCyan, 0.22f), 12, 1.5f);
-
-    ui::TextOutline("装甲", bx, 24, 20, WithAlpha(pal::kText, 0.85f), WithAlpha(BLACK, 0.6f));
-    snprintf(buf, sizeof buf, "%d", (int)std::ceil(hp_));
-    ui::TextR(buf, rx, 20, 26, WithAlpha(hpCol, 0.95f), true);
-    DrawRectangle((int)bx - 3, (int)54 - 3, (int)barW + 6, 26, WithAlpha(BLACK, 0.55f));
-    SegBar(bx, 54, barW, 20, ratio, 20, hpCol, WithAlpha(Color{40, 52, 66, 255}, 0.85f));
-    DrawRectangle((int)bx, (int)54, (int)(barW * ratio), 4, WithAlpha(WHITE, 0.35f));
-
-    // ---- 爆弹
-    ui::TextOutline("爆弹", bx, 90, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.6f));
-    for (int i = 0; i < bombs_; i++) {
-        float cx = rx - 12 - i * 30, cy = 102;
-        DrawCircle((int)cx, (int)(cy + 4), 10, pal::kGold);
-        DrawRectangle((int)cx - 3, (int)cy - 16, 6, 10, WithAlpha(pal::kGold, 0.9f));
-        DrawCircle((int)cx, (int)cy - 16, 3, WithAlpha(Color{255, 240, 200, 255}, 0.9f));
+    // ---- 玩家面板
+    if (versus_) {
+        drawDuelHud();
+    } else {
+        float pw = 372, px0 = VW - 36 - pw;
+        drawPlayerHudPanel(0, {px0, 10, pw, 158}, true);
+        if (playerCount_ > 1) drawPlayerHudPanel(1, {px0, 176, pw, 158}, true);
     }
 
-    // ---- 闪身冷却
-    float dr = dashReady01();
-    ui::TextOutline("闪避", bx, 128, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.6f));
-    if (dr >= 0.999f) {
-        float p = ui::Pulse(2.4f);
-        ui::TextR("就绪", rx, 128, 18, WithAlpha(pal::kCyan, 0.55f + 0.45f * p), true);
-    }
-    DrawRectangle((int)bx, (int)158, (int)barW, 8, WithAlpha(Color{34, 44, 58, 255}, 0.9f));
-    DrawRectangle((int)bx, (int)158, (int)(barW * dr), 8, WithAlpha(dr >= 0.999f ? pal::kCyan : pal::kDim, 0.95f));
+    if (!versus_) {
+        // ---- 剩余敌机（左下）
+        int left = enemiesLeft();
+        ui::TextOutline("敌机", 48, VH - 100, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.65f));
+        snprintf(buf, sizeof buf, "%02d", left);
+        ui::TextOutline(buf, 46, VH - 76, 44, left > 0 ? pal::kText : WithAlpha(pal::kCyan, 0.9f),
+                        WithAlpha(BLACK, 0.6f), true);
 
-    // ---- 剩余敌机（左下）
-    int left = enemiesLeft();
-    ui::TextOutline("敌机", 48, VH - 100, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.65f));
-    snprintf(buf, sizeof buf, "%02d", left);
-    ui::TextOutline(buf, 46, VH - 76, 44, left > 0 ? pal::kText : WithAlpha(pal::kCyan, 0.9f), WithAlpha(BLACK, 0.6f),
-                   true);
-
-    // ---- 波次进度（右下，5 格）
-    float bw = 44, gap = 8;
-    float totalW = kWaveCount * (bw + gap) - gap;
-    float px = VW - 48 - totalW, py = VH - 76;
-    ui::TextOutline("进度", px - 22 - ui::TextW("进度", 20), py + 4, 20, WithAlpha(pal::kText, 0.75f),
-                   WithAlpha(BLACK, 0.6f));
-    for (int i = 0; i < kWaveCount; i++) {
-        bool done = (i < wave_) || (i == wave_ && wavePhase_ == WP_Gap);
-        bool cur = (i == wave_) && !done;
-        Color c = done ? pal::kCyan : (cur ? WithAlpha(pal::kCyan, 0.45f) : WithAlpha(WHITE, 0.14f));
-        DrawRectangle((int)(px + i * (bw + gap)), (int)py, (int)bw, 26, c);
-        if (done) DrawRectangle((int)(px + i * (bw + gap)), (int)py, (int)bw, 6, WithAlpha(WHITE, 0.55f));
-        if (cur) DrawRectangleLinesEx({px + i * (bw + gap), py, bw, 26}, 2, WithAlpha(pal::kCyan, 0.85f));
+        // ---- 波次进度（右下，5 格）
+        float bw = 44, gap = 8;
+        float totalW = kWaveCount * (bw + gap) - gap;
+        float px = VW - 48 - totalW, py = VH - 76;
+        ui::TextOutline("进度", px - 22 - ui::TextW("进度", 20), py + 4, 20, WithAlpha(pal::kText, 0.75f),
+                        WithAlpha(BLACK, 0.6f));
+        for (int i = 0; i < kWaveCount; i++) {
+            bool done = (i < wave_) || (i == wave_ && wavePhase_ == WP_Gap);
+            bool cur = (i == wave_) && !done;
+            Color c = done ? pal::kCyan : (cur ? WithAlpha(pal::kCyan, 0.45f) : WithAlpha(WHITE, 0.14f));
+            DrawRectangle((int)(px + i * (bw + gap)), (int)py, (int)bw, 26, c);
+            if (done) DrawRectangle((int)(px + i * (bw + gap)), (int)py, (int)bw, 6, WithAlpha(WHITE, 0.55f));
+            if (cur) DrawRectangleLinesEx({px + i * (bw + gap), py, bw, 26}, 2, WithAlpha(pal::kCyan, 0.85f));
+        }
     }
 
     // ---- 波次横幅
@@ -1667,7 +1950,7 @@ void World::drawHud() {
 
     // ---- Boss 血条
     if (boss_.alive) {
-        float w = 1120, x = VW * 0.5f - w * 0.5f, y = 40;
+        float w = 1040, x = VW * 0.5f - w * 0.5f, y = 40;
         float r = bossHp01();
         DrawRectangle((int)x - 4, (int)y - 4, (int)w + 8, 34, WithAlpha(BLACK, 0.6f));
         DrawRectangle((int)x, (int)y, (int)w, 26, WithAlpha(Color{40, 20, 24, 255}, 0.85f));
@@ -1690,8 +1973,8 @@ void World::drawHud() {
             float t = 0.45f - i * 0.13f;
             DrawRectangleLinesEx({0, 0, VW, VH}, 30 - i * 9, WithAlpha(pal::kDanger, t * danger * (0.45f + 0.4f * p)));
         }
-        // 操作提示：教玩家用闪避脱离锁定线
-        const char* hint = "SHIFT + 方向    闪避";
+        // 操作提示：教玩家用闪避脱离锁定线（双人时两套按键都要写出来）
+        const char* hint = (playerCount_ > 1) ? "1P  L        2P  /        闪避" : "SHIFT + 方向 / L    闪避";
         float hw = ui::TextW(hint, 30, true) + 60;
         ui::Panel({VW * 0.5f - hw * 0.5f, VH - 168, hw, 62}, WithAlpha(pal::kPanelBg, 0.72f * danger),
                   WithAlpha(pal::kDanger, 0.6f * danger), 10, 2);

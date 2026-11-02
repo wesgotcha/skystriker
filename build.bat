@@ -10,7 +10,7 @@ set LIBDIR=-L"vendor/raylib-6.2_win64_mingw-w64/lib"
 rem -mwindows: link as GUI subsystem, so double-click does not spawn a console box.
 rem launched from cmd/run.bat the game attaches to the parent console itself, so
 rem printf/TraceLog stay visible; use --console to force a window when debugging.
-set LIBS=-lraylib -lopengl32 -lgdi32 -lwinmm -lshell32 -mwindows
+set LIBS=-lraylib -lopengl32 -lgdi32 -lwinmm -lshell32 -lws2_32 -mwindows
 
 set SRC=
 for %%f in (src\*.cpp src\core\*.cpp src\screens\*.cpp src\game\*.cpp) do set SRC=!SRC! %%f

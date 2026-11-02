@@ -6,7 +6,7 @@
 
 namespace sky {
 
-enum class Sid { Boot, Title, Hangar, Game };
+enum class Sid { Boot, Title, Lobby, Hangar, Game };
 
 // 一屏的接口。绘制被拆成四段，方便在 2D / 3D 之间切换：
 //   drawWorld()  → 2D 背景（视差层、地面阴影）
@@ -136,6 +136,11 @@ public:
     bool        timeLoad = false;    // 调试：--time-load 打印各阶段加载耗时
     std::string overlayName;
     int         forceW = 0, forceH = 0;
+    // 联机调试：--mp=coop|versus --host / --join=IP [--autostart]
+    int         autoNetMode = -1;
+    bool        autoHost = false;
+    std::string autoJoinIp;
+    bool        autoNetStart = false;
     float       testEscAt = -1.0f;  // 调试：在第 N 秒注入一次 ESC
     int         testKey = 0;        // 调试：--test-key=R@5
     float       testKeyAt = -1.0f;
