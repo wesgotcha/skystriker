@@ -4,6 +4,7 @@
 #include "App.hpp"
 #include "Assets.hpp"
 #include "Audio.hpp"
+#include "Replay.hpp"
 #include "Save.hpp"
 #include "Ui.hpp"
 #include "World.hpp"
@@ -18,12 +19,26 @@ bool g_forceResult = false;
 static World  g_world;
 static bool   g_continue = false;
 
+// 本局录像（每帧一条输入），战斗结束时落盘到 replays/
+static replay::Rec g_rec;
+static bool        g_recOn = false;
+
 void StartNewRun(bool continueRun) { g_continue = continueRun; }
 
 // ---------------------------------------------------------------- 战斗屏
 void GameScreen::enter() {
     g_world.start(g_continue);
     t_ = 0;
+    // 每局都录。--demo 是自动代打，输入不是玩家的，不录。
+    g_recOn = !app().demoMode;
+    replay::ClearLastSaved();
+    if (g_recOn) replay::Begin(g_rec, g_continue, app().godMode);
+}
+
+void GameScreen::leave() {
+    // 中途退出（重开 / 回主菜单 / 阵亡重试）不留半局录像
+    g_recOn = false;
+    g_rec.frames.clear();
 }
 
 void GameScreen::update(float dt) {
@@ -37,7 +52,12 @@ void GameScreen::update(float dt) {
             return;
         }
         g_world.update(dt, app().demoMode);
+        if (g_recOn) replay::Push(g_rec, g_world.lastInput(), dt);
         if (g_world.finished()) {
+            if (g_recOn) {
+                g_recOn = false;
+                replay::Finish(g_rec, g_world);  // 落盘，之后阵亡界面可以直接点「看回放」
+            }
             auto& d = HangarScreen::lastResult();
             d.kills = g_world.kills();
             d.score = g_world.score();
@@ -158,38 +178,74 @@ void PauseOverlay::draw() {
 }
 
 // ---------------------------------------------------------------- 阵亡
+namespace {
+// 按钮矩形只写一份：绘制与命中同源，否则会出现"看得见点不到"
+Rectangle GameOverBtnRect(int i) {
+    if (i == 2) return {VW * 0.5f - 230, 826, 460, 72};
+    return {VW * 0.5f + (i == 0 ? -320.0f : 40.0f), 720, 280, 84};
+}
+const char* GameOverBtnLabel(int i) {
+    if (i == 0) return "重试  [R]";
+    if (i == 1) return "选择战机  [H]";
+    return "看回放  [T]";
+}
+}  // namespace
+
 void GameOverOverlay::update(float dt) {
     t_ += dt;
     auto& in = app().in;
     newRecord_ = save::data().lastScore >= save::data().hiScore && save::data().lastScore > 0;
+    hasReplay_ = !replay::LastSaved().empty();
     if (t_ < 1.2f) return;
-    if (in.pressed(KEY_R) || (in.ok() && focus_ == 0)) {
+
+    int n = hasReplay_ ? 3 : 2;
+    if (focus_ >= n) focus_ = 0;
+
+    auto retry = []() {
         audio::play(audio::SfxUiSelect, 0.8f);
         app().clearOverlays();
         g_continue = false;
         app().go(Sid::Game);
-        return;
-    }
-    if (in.pressed(KEY_H) || in.back() || (in.ok() && focus_ == 1)) {
+    };
+    auto hangar = []() {
         audio::play(audio::SfxUiSelect, 0.8f);
         app().clearOverlays();
         g_hangarMode = 0;
         app().go(Sid::Hangar);
-        return;
-    }
-    Rectangle b1{VW * 0.5f - 320, 720, 280, 84};
-    Rectangle b2{VW * 0.5f + 40, 720, 280, 84};
-    if (ui::Hover(b1)) focus_ = 0;
-    if (ui::Hover(b2)) focus_ = 1;
-    if (ui::Hover(b1) && in.lmbPressed) {
+    };
+    auto watch = []() {
+        audio::play(audio::SfxUiSelect, 0.8f);
+        replay::SetPending(replay::LastSaved());
         app().clearOverlays();
-        g_continue = false;
-        app().go(Sid::Game);
+        app().go(Sid::Replay);
+    };
+
+    if (in.pressed(KEY_R)) { retry(); return; }
+    if (in.pressed(KEY_H) || in.back()) { hangar(); return; }
+    if (hasReplay_ && in.pressed(KEY_T)) { watch(); return; }
+
+    if (in.navLeft()) { focus_ = (focus_ + n - 1) % n; audio::play(audio::SfxUiMove, 0.5f); }
+    if (in.navRight()) { focus_ = (focus_ + 1) % n; audio::play(audio::SfxUiMove, 0.5f); }
+
+    for (int i = 0; i < n; i++) {
+        if (ui::Hover(GameOverBtnRect(i)) && focus_ != i) {
+            focus_ = i;
+            audio::play(audio::SfxUiMove, 0.4f);
+        }
     }
-    if (ui::Hover(b2) && in.lmbPressed) {
-        app().clearOverlays();
-        g_hangarMode = 0;
-        app().go(Sid::Hangar);
+    if (in.lmbPressed) {
+        for (int i = 0; i < n; i++) {
+            if (!ui::Hover(GameOverBtnRect(i))) continue;
+            if (i == 0) retry();
+            else if (i == 1) hangar();
+            else watch();
+            return;
+        }
+    }
+    if (in.ok()) {
+        if (focus_ == 0) retry();
+        else if (focus_ == 1) hangar();
+        else if (hasReplay_) watch();
     }
 }
 
@@ -223,8 +279,9 @@ void GameOverOverlay::draw() {
     }
 
     if (t_ > 1.2f) {
-        ui::Button({VW * 0.5f - 320, 720, 280, 84}, "重试  [R]", focus_ == 0, true, 30);
-        ui::Button({VW * 0.5f + 40, 720, 280, 84}, "选择战机  [H]", focus_ == 1, true, 30);
+        int n = hasReplay_ ? 3 : 2;
+        for (int i = 0; i < n; i++)
+            ui::Button(GameOverBtnRect(i), GameOverBtnLabel(i), focus_ == i, true, i == 2 ? 26 : 30);
     }
 }
 
@@ -233,6 +290,7 @@ std::unique_ptr<Screen> MakeOverlay(const std::string& n) {
     if (n == "pause") return std::make_unique<PauseOverlay>();
     if (n == "settings") return std::make_unique<SettingsOverlay>();
     if (n == "records") return std::make_unique<RecordsOverlay>();
+    if (n == "history") return std::make_unique<HistoryOverlay>();
     if (n == "briefing") return std::make_unique<BriefingOverlay>();
     if (n == "gameover") return std::make_unique<GameOverOverlay>();
     if (n == "confirm")
@@ -255,6 +313,7 @@ std::unique_ptr<Screen> MakeScreen(Sid id) {
             return hs;
         }
         case Sid::Game: return std::make_unique<GameScreen>();
+        case Sid::Replay: return std::make_unique<ReplayScreen>();
     }
     return nullptr;
 }

@@ -526,15 +526,21 @@ void World::startDash(Vector2 dir) {
 void World::updatePlayer(float dt, bool autopilot) {
     if (playerDeathT_ > 0) {
         playerDeathT_ -= dt;
+        lastInput_ = WorldInput{};
         return;
     }
     if (invuln_ > 0) invuln_ -= dt;
     if (dashCd_ > 0) dashCd_ = std::max(0.0f, dashCd_ - dt);
 
     const Input& in = app().in;
+    WorldInput wi;
     Vector2 dir{0, 0};
 
-    if (autopilot) {
+    if (scripted_) {
+        // 复盘：本帧输入全部来自录像，绝不读键盘/鼠标
+        wi = script_;
+        dir = {wi.dirX, wi.dirY};
+    } else if (autopilot) {
         // 自动演示：躲弹 + 躲冲锋 + 居中
         autopilotT_ -= dt;
         Vector2 repulse{0, 0};
@@ -601,23 +607,38 @@ void World::updatePlayer(float dt, bool autopilot) {
             dir.x *= 0.7071f;
             dir.y *= 0.7071f;
         }
-        // 鼠标操控：按住左键时跟随
+        // 鼠标操控：只有这一帧真的动过鼠标才跟（录下来的也是这个结论）
         if (in.lmb && in.mouseMoved) {
-            float k = 1.0f - std::exp(-dt * 18.0f);
-            player_.x = lerpf(player_.x, in.mouse.x, k);
-            player_.y = lerpf(player_.y, in.mouse.y, k);
+            wi.mouseSteer = true;
+            wi.mouseX = in.mouse.x;
+            wi.mouseY = in.mouse.y;
         }
+        wi.fire = in.down(save::data().keyFire) || in.down(KEY_SPACE) || in.lmb;
+        wi.bomb = in.pressed(save::data().keyBomb) || in.pressed(KEY_L);
+    }
+
+    // 鼠标跟随：实时与复盘共用这一段，跟随速率只由 dt 决定
+    if (wi.mouseSteer) {
+        float k = 1.0f - std::exp(-dt * 18.0f);
+        player_.x = lerpf(player_.x, wi.mouseX, k);
+        player_.y = lerpf(player_.y, wi.mouseY, k);
     }
 
     // ---- 闪身：Shift + 方向（无方向则朝机头 +X）
+    bool wantDash = false;
     if (!autopilot && dashT_ <= 0 && dashCd_ <= 0) {
-        bool shiftDown = in.down(KEY_LEFT_SHIFT) || in.down(KEY_RIGHT_SHIFT);
-        bool shiftHit = in.pressed(KEY_LEFT_SHIFT) || in.pressed(KEY_RIGHT_SHIFT);
-        bool dirHit = in.pressed(KEY_LEFT) || in.pressed(KEY_RIGHT) || in.pressed(KEY_UP) || in.pressed(KEY_DOWN) ||
-                      in.pressed(KEY_A) || in.pressed(KEY_D) || in.pressed(KEY_W) || in.pressed(KEY_S);
-        bool wantDash = (shiftDown && dirHit) || (shiftHit && (dir.x != 0 || dir.y != 0));
+        if (scripted_) {
+            wantDash = wi.dash;
+        } else {
+            bool shiftDown = in.down(KEY_LEFT_SHIFT) || in.down(KEY_RIGHT_SHIFT);
+            bool shiftHit = in.pressed(KEY_LEFT_SHIFT) || in.pressed(KEY_RIGHT_SHIFT);
+            bool dirHit = in.pressed(KEY_LEFT) || in.pressed(KEY_RIGHT) || in.pressed(KEY_UP) || in.pressed(KEY_DOWN) ||
+                          in.pressed(KEY_A) || in.pressed(KEY_D) || in.pressed(KEY_W) || in.pressed(KEY_S);
+            wantDash = (shiftDown && dirHit) || (shiftHit && (dir.x != 0 || dir.y != 0));
+        }
         if (wantDash) startDash(dir);
     }
+    if (!scripted_) wi.dash = wantDash;  // 录进这一帧，复盘按同一帧重放
 
     if (dashT_ > 0) {
         dashT_ = std::max(0.0f, dashT_ - dt);
@@ -647,7 +668,7 @@ void World::updatePlayer(float dt, bool autopilot) {
     pose::Update(playerPose_, pose::kPlayer, playerVyN_, dt);
 
     // 射击
-    bool firing = autopilot || in.down(save::data().keyFire) || in.down(KEY_SPACE) || in.lmb;
+    bool firing = autopilot || wi.fire;
     fireCd_ -= dt;
     if (firing && fireCd_ <= 0) {
         fireCd_ = 0.115f;
@@ -664,7 +685,7 @@ void World::updatePlayer(float dt, bool autopilot) {
     }
 
     // 爆弹
-    if (!autopilot && (in.pressed(save::data().keyBomb) || in.pressed(KEY_L))) {
+    if (!autopilot && wi.bomb) {
         if (bombs_ > 0) {
             bombs_--;
             bombFlash_ = 0.9f;
@@ -689,6 +710,11 @@ void World::updatePlayer(float dt, bool autopilot) {
         }
     }
     if (bombFlash_ > 0) bombFlash_ -= dt;
+
+    // 记下本帧真正生效的输入（方向用解算后的值），录像直接抄这一份
+    lastInput_ = wi;
+    lastInput_.dirX = dir.x;
+    lastInput_.dirY = dir.y;
 }
 
 // ---------------------------------------------------------------- 子弹

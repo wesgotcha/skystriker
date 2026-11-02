@@ -143,11 +143,16 @@ def capture(hwnd, path):
     return ok, cw, ch, img
 
 
+# 扩展键（方向键 / 编辑键 / Win 键）：lParam 的 bit24 必须置位，
+# 否则 GLFW 按扫描码查表会认成小键盘那一路，表现就是"按了方向键但没反应"。
+EXTENDED_KEYS = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x2F, 0x5B, 0x5C, 0x5D}
+
+
 def _lparam(vk, up=False):
     """GLFW 从 lParam 的 bit16..23 取扫描码判定按键；
     只传 lParam=0 会被当成未知键，按键直接失效。"""
     sc = user32.MapVirtualKeyW(vk, 0) & 0xFF
-    lp = 1 | (sc << 16)
+    lp = 1 | (sc << 16) | ((1 << 24) if vk in EXTENDED_KEYS else 0)
     if up:
         lp |= (1 << 30) | (1 << 31)
     return lp

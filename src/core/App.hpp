@@ -6,7 +6,7 @@
 
 namespace sky {
 
-enum class Sid { Boot, Title, Hangar, Game };
+enum class Sid { Boot, Title, Hangar, Game, Replay };
 
 // 一屏的接口。绘制被拆成四段，方便在 2D / 3D 之间切换：
 //   drawWorld()  → 2D 背景（视差层、地面阴影）
@@ -140,6 +140,7 @@ public:
     int         testKey = 0;        // 调试：--test-key=R@5
     float       testKeyAt = -1.0f;
     float       forceFailAt = -1.0f;  // 调试：第 N 秒强制阵亡
+    bool        forceFailDone = false;
     bool        forceResult = false;
 
     // 转场

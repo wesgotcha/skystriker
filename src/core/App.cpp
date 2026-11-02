@@ -3,6 +3,7 @@
 #include "Assets.hpp"
 #include "Audio.hpp"
 #include "Platform.hpp"
+#include "Replay.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -77,6 +78,7 @@ bool App::init(int argc, char** argv) {
             else if (s == "title") startAt = Sid::Title;
             else if (s == "hangar") startAt = Sid::Hangar;
             else if (s == "game") startAt = Sid::Game;
+            else if (s == "replay") startAt = Sid::Replay;
         } else if (a == "--demo") demoMode = true;
         else if (a == "--god") godMode = true;
         else if (a == "--fps") fpsLog = true;
@@ -97,6 +99,7 @@ bool App::init(int argc, char** argv) {
             }
         }
         else if (const char* v = val("--overlay=")) overlayName = v;
+        else if (const char* v = val("--replay=")) replay::SetPending(v);
         else if (const char* v = val("--size=")) { sscanf(v, "%dx%d", &forceW, &forceH); }
         else if (a == "--result") forceResult = true;
     }
@@ -488,6 +491,12 @@ void App::run() {
         updateInput();
         float dt = GetFrameTime();
         if (dt > 0.1f) dt = 0.1f;
+
+        // --force-fail 在正常循环里也要生效：复盘功能要靠它自动打一局做验证
+        if (forceFailAt >= 0.0f && !forceFailDone && in.time >= forceFailAt) {
+            forceFailDone = true;
+            GameDebugForceFail();
+        }
 
         stepSimulation(dt);
 
