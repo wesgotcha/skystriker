@@ -128,6 +128,8 @@ public:
     bool        fpsLog = false;   // 调试：每秒打印一次帧率
     bool        debugTitle = false;  // 调试：把当前屏幕写进窗口标题
     bool        stateLog = false;    // 调试：每秒打印一次战斗状态
+    bool        consoleWanted = false;  // 调试：--console 强制开一个控制台窗口
+    bool        timeLoad = false;    // 调试：--time-load 打印各阶段加载耗时
     std::string overlayName;
     int         forceW = 0, forceH = 0;
     float       testEscAt = -1.0f;  // 调试：在第 N 秒注入一次 ESC

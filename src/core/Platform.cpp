@@ -5,6 +5,8 @@
 #include <windows.h>
 #endif
 
+#include <cstdio>
+
 namespace sky::platform {
 
 #if defined(_WIN32)
@@ -40,6 +42,26 @@ void EnableDpiAwareness() {
     SetProcessDPIAware();
 }
 
+void SetupConsole(bool force) {
+    // 情况一：stdout 已经指向有效的文件/管道（live_test.py 就是这么重定向的），
+    // 不要抢回来，直接沿用。
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out && out != INVALID_HANDLE_VALUE) return;
+    // 情况二：本来就是控制台程序，什么都不用做。
+    if (GetConsoleWindow()) return;
+
+    // 情况三：GUI 子系统。父进程有控制台（从 cmd / run.bat 启动）就挂上去；
+    // 双击启动时父进程是 explorer，没有控制台，AttachConsole 会失败 —— 于是什么都不发生。
+    bool ok = AttachConsole(ATTACH_PARENT_PROCESS) != 0;
+    if (!ok && force) ok = AllocConsole() != 0;
+    if (!ok) return;
+
+    FILE* f = nullptr;
+    freopen_s(&f, "CONOUT$", "w", stdout);
+    freopen_s(&f, "CONOUT$", "w", stderr);
+    freopen_s(&f, "CONIN$", "r", stdin);
+}
+
 float DpiScale() {
     HMODULE user32 = LoadLibraryA("user32.dll");
     auto getDpi = (GetDpiForSystemFn)Proc(user32, "GetDpiForSystem");
@@ -67,6 +89,7 @@ int MonitorHeight() {
 #else
 
 void  EnableDpiAwareness() {}
+void  SetupConsole(bool) {}
 float DpiScale() { return 1.0f; }
 int   MonitorWidth() { return 1920; }
 int   MonitorHeight() { return 1080; }

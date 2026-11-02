@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 
 namespace sky::assets {
@@ -189,13 +190,20 @@ static std::vector<Job> jobs;
 
 static std::string ModelPath(const char* group, const char* name) {
     std::string s = "models/";
-    s += group; s += "/"; s += name; s += "/glTF/"; s += name; s += ".gltf";
-    return s;
+    s += group; s += "/"; s += name; s += "/glTF/"; s += name;
+    // tools/prep_assets.py 生成的去贴图版本：LoadModel 不必再解码那张用不到的内嵌 2048² 贴图。
+    // 没生成过就退回原版，功能不受影响，只是启动慢一点。
+    std::string opt = s + "_mesh.gltf";
+    if (FileExists(opt.c_str())) return opt;
+    return s + ".gltf";
 }
 static std::string SkinPath(const char* group, const char* name, const char* skin) {
     std::string s = "models/";
-    s += group; s += "/"; s += name; s += "/Textures/"; s += name; s += "_"; s += skin; s += ".png";
-    return s;
+    s += group; s += "/"; s += name; s += "/Textures/";
+    // 同理：预处理过的是目标尺寸（512 / 1024），省掉运行时"解码 2048² 再缩"的 80ms
+    std::string opt = s + "opt/" + name + "_" + skin + ".png";
+    if (FileExists(opt.c_str())) return opt;
+    return s + name + "_" + skin + ".png";
 }
 
 // 路径字符串集中存放：先全部构造完，再取 c_str()，避免 vector 重分配导致悬垂
@@ -246,7 +254,9 @@ void loadModelJob(int i) {
     else c = &enemies[j.index];
 
     c->jobIndex = i;
+    double t0 = (double)GetTime();
     c->model = LoadModel(j.gltf);
+    double t1 = (double)GetTime();
     if (c->model.meshCount == 0) {
         TraceLog(LOG_ERROR, "MODEL: failed %s", j.gltf);
         c->loaded = true;
@@ -277,6 +287,12 @@ void loadModelJob(int i) {
         UnloadTexture(t);
     }
     c->loaded = true;
+    if (getenv("SKY_LOAD_LOG")) {
+        double t2 = (double)GetTime();
+        printf("[model] %-46s gltf=%5.1f skin=%5.1f ms\n", j.gltf, (t1 - t0) * 1000.0,
+               (t2 - t1) * 1000.0);
+        fflush(stdout);
+    }
 }
 
 void ensureSkin(Craft& c, int skin) {

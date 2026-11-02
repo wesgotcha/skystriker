@@ -14,7 +14,9 @@ set(RAYLIB_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/raylib-cpp-6.0.3")
 
 file(GLOB_RECURSE GAME_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
-add_executable(SkyStriker ${GAME_SOURCES})
+# WIN32 = GUI 子系统，等价于 g++ 的 -mwindows：
+# 不加这个关键字，CMake 编出来的 exe 和以前一样，双击会弹一个控制台黑框。
+add_executable(SkyStriker WIN32 ${GAME_SOURCES})
 
 target_include_directories(SkyStriker PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"

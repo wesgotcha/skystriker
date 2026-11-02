@@ -6,8 +6,15 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <chrono>
 
 namespace sky {
+
+static double nowMs() {
+    using namespace std::chrono;
+    return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+}
 
 CameraRig& cameraRig() {
     static CameraRig r;
@@ -75,6 +82,8 @@ bool App::init(int argc, char** argv) {
         else if (a == "--fps") fpsLog = true;
         else if (a == "--debug-title") debugTitle = true;
         else if (a == "--state-log") stateLog = true;
+        else if (a == "--console") consoleWanted = true;
+        else if (a == "--time-load") timeLoad = true;
         else if (const char* v = val("--test-esc=")) testEscAt = (float)atof(v);
         else if (const char* v = val("--force-fail=")) forceFailAt = (float)atof(v);
         else if (const char* v = val("--test-key=")) {
@@ -92,7 +101,21 @@ bool App::init(int argc, char** argv) {
         else if (a == "--result") forceResult = true;
     }
 
+    // exe 是 GUI 子系统（-mwindows），默认没有控制台。
+    // 从 cmd 启动就挂到父控制台，双击启动就什么也不做 —— 不会弹黑框。
+    platform::SetupConsole(consoleWanted);
+
+    double tPrev = nowMs();
+    auto lap = [&](const char* tag) {
+        if (!timeLoad) return;
+        double t = nowMs();
+        printf("[load] %-14s %7.1f ms\n", tag, t - tPrev);
+        fflush(stdout);
+        tPrev = t;
+    };
+
     platform::EnableDpiAwareness();
+    lap("dpi");
 
     // 允许从 build/ 或工程根目录启动
     if (!DirectoryExists("assets") && DirectoryExists("../assets")) ChangeDirectory("..");
@@ -113,6 +136,7 @@ bool App::init(int argc, char** argv) {
     winW = GetRenderWidth();
     winH = GetRenderHeight();
     updateCanvas();
+    lap("window");
 
     Image icon = LoadImage("assets/logo/logo_sky_striker.png");
     if (icon.data) {
@@ -120,6 +144,7 @@ bool App::init(int argc, char** argv) {
         SetWindowIcon(icon);
         UnloadImage(icon);
     }
+    lap("icon");
 
     // 转场用的每格随机延迟
     Rng rng;
@@ -128,12 +153,16 @@ bool App::init(int argc, char** argv) {
         for (int y = 0; y < 14; y++) cellDelay_[x][y] = rng.range(0.0f, 0.85f);
 
     audio::init();
+    lap("audio");
+
     assets::init();
+    lap("assets");
 
     if (forceResult) g_forceResult = true;
     if (!shotPath.empty()) {
         // 截图模式：同步加载全部机体，保证任意屏都能正确渲染
         for (int i = 0; i < assets::modelJobCount(); i++) assets::loadModelJob(i);
+        lap("models(all)");
     }
     goNow(startAt);
     if (!overlayName.empty()) {
@@ -141,6 +170,7 @@ bool App::init(int argc, char** argv) {
         if (ov) pushOverlay(std::move(ov));
     }
     inited_ = true;
+    lap("first screen");
     return true;
 }
 

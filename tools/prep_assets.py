@@ -23,7 +23,12 @@ import json
 import os
 import sys
 
-from PIL import Image
+try:
+    from PIL import Image
+    HAVE_PIL = True
+except ImportError:  # 没装 Pillow 时只做 glTF 那一半（收益最大的一半）
+    Image = None
+    HAVE_PIL = False
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS = os.path.join(ROOT, 'models')
@@ -75,6 +80,8 @@ def main():
     if not os.path.isdir(MODELS):
         print('[prep] 找不到 models/，跳过')
         return 0
+    if not HAVE_PIL:
+        print('[prep] 没装 Pillow，跳过配色图预缩放（pip install pillow 可开启）')
 
     n_gltf = n_skin = n_skip = 0
     for group in sorted(os.listdir(MODELS)):
@@ -102,7 +109,7 @@ def main():
 
             # ---- 配色贴图 ----
             tex_dir = os.path.join(mdir, 'Textures')
-            if not os.path.isdir(tex_dir):
+            if not HAVE_PIL or not os.path.isdir(tex_dir):
                 continue
             out_dir = os.path.join(tex_dir, 'opt')
             for fn in sorted(os.listdir(tex_dir)):
