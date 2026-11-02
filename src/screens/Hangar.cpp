@@ -52,15 +52,48 @@ HangarScreen::ResultData& HangarScreen::lastResult() {
 HangarScreen::HangarScreen(Mode m) : mode_(m) {}
 
 void HangarScreen::enter() {
-    craft_ = clampi(save::data().craft, 0, 5);
-    // skin_ 存的是"色卡槽位"，save 里存的是真正的皮肤索引：旧存档可能是已下架的
-    // 配色，这里统一折算回槽位，并把存档写回合法值。
-    skin_ = SkinSlotOf(clampi(save::data().skin, 0, assets::SKIN_COUNT - 1));
-    save::data().skin = kSkinSlots[skin_];
+    craftSel_[0] = clampi(save::data().craft, 0, 5);
+    skinSel_[0] = SkinSlotOf(clampi(save::data().skin, 0, assets::SKIN_COUNT - 1));
+    craftSel_[1] = clampi(save::data().craft2, 0, 5);
+    skinSel_[1] = SkinSlotOf(clampi(save::data().skin2, 0, assets::SKIN_COUNT - 1));
+    slot_ = 0;
+    craft_ = craftSel_[0];
+    skin_ = skinSel_[0];
+    save::data().skin = kSkinSlots[skin_];   // 旧存档可能存着已下架的配色，写回合法值
+    save::data().skin2 = kSkinSlots[skinSel_[1]];
+    applySelection();
     yaw_ = 60;
     t_ = 0;
     for (auto& a : appear_) a = 0;
     if (mode_ == Result) focus_ = 0;
+    assets::ensureLoaded(assets::playerJob(craft_));
+    assets::ensureSkin(assets::players[craft_], kSkinSlots[skin_]);
+}
+
+void HangarScreen::applySelection() {
+    auto& c = match::cfg();
+    c.craft[0] = craftSel_[0];
+    c.skin[0] = kSkinSlots[skinSel_[0]];
+    c.craft[1] = craftSel_[1];
+    c.skin[1] = kSkinSlots[skinSel_[1]];
+    save::data().craft = craftSel_[0];
+    save::data().skin = kSkinSlots[skinSel_[0]];
+    save::data().craft2 = craftSel_[1];
+    save::data().skin2 = kSkinSlots[skinSel_[1]];
+}
+
+void HangarScreen::switchSlot() {
+    if (match::cfg().players() < 2) return;
+    slot_ = 1 - slot_;
+    craft_ = craftSel_[slot_];
+    skin_ = skinSel_[slot_];
+    swapT_ = 0;
+    for (auto& a : appear_) a = 0;
+    assets::ensureLoaded(assets::playerJob(craft_));
+    assets::ensureSkin(assets::players[craft_], kSkinSlots[skin_]);
+    applySelection();
+    save::save();
+    audio::play(audio::SfxUiMove, 0.7f, 1.08f);
 }
 
 void HangarScreen::changeCraft(int d) {
@@ -69,8 +102,12 @@ void HangarScreen::changeCraft(int d) {
     if (n > 5) n = 0;
     if (n == craft_) return;
     craft_ = n;
+    craftSel_[slot_] = n;
     swapT_ = 0;
     for (auto& a : appear_) a = 0;
+    applySelection();
+    assets::ensureLoaded(assets::playerJob(craft_));
+    assets::ensureSkin(assets::players[craft_], kSkinSlots[skin_]);
     audio::play(audio::SfxUiMove, 0.55f);
 }
 
@@ -126,11 +163,26 @@ void HangarScreen::update(float dt) {
     if (in.navLeft()) changeCraft(-1);
     if (in.navRight()) changeCraft(1);
 
+    // 双人：TAB 切换正在配机的玩家；单人保留原来的"TAB 换色"
+    if (in.pressed(KEY_TAB)) {
+        if (match::cfg().players() > 1) {
+            switchSlot();
+        } else {
+            skin_ = (skin_ + 1) % kSkinSlotCount;
+            skinSel_[0] = skin_;
+            save::data().skin = kSkinSlots[skin_];
+            applySelection();
+            save::save();
+            audio::play(audio::SfxUiMove, 0.6f);
+        }
+    }
     // 换色
-    if (in.pressed(KEY_C) || in.pressed(KEY_TAB)) {
+    if (in.pressed(KEY_C)) {
         skin_ = (skin_ + 1) % kSkinSlotCount;
-        save::data().skin = kSkinSlots[skin_];
+        skinSel_[slot_] = skin_;
+        applySelection();
         save::save();
+        assets::ensureSkin(assets::players[craft_], kSkinSlots[skin_]);
         audio::play(audio::SfxUiMove, 0.6f);
     }
 
@@ -139,10 +191,18 @@ void HangarScreen::update(float dt) {
     for (int i = 0; i < 6; i++) {
         Rectangle r{stripX + i * (cardW + gap), cardY, cardW, cardH};
         if (ui::Hover(r)) {
-            if (craft_ != i) changeCraft(i - craft_ > 0 ? 1 : -1), craft_ = i;
+            if (craft_ != i) {
+                craft_ = i;
+                craftSel_[slot_] = i;
+                swapT_ = 0;
+                for (auto& a : appear_) a = 0;
+                applySelection();
+                assets::ensureLoaded(assets::playerJob(craft_));
+                assets::ensureSkin(assets::players[craft_], kSkinSlots[skin_]);
+                audio::play(audio::SfxUiMove, 0.5f);
+            }
             if (in.lmbPressed) {
                 if (assets::players[i].unlocked) {
-                    save::data().craft = i;
                     save::save();
                 }
             }
@@ -152,8 +212,10 @@ void HangarScreen::update(float dt) {
     for (int i = 0; i < kSkinSlotCount; i++) {
         if (ui::Hover(SkinSwatchRect(i)) && in.lmbPressed) {
             skin_ = i;
-            save::data().skin = kSkinSlots[skin_];
+            skinSel_[slot_] = i;
+            applySelection();
             save::save();
+            assets::ensureSkin(assets::players[craft_], kSkinSlots[skin_]);
             audio::play(audio::SfxUiMove, 0.6f);
         }
     }
@@ -162,24 +224,32 @@ void HangarScreen::update(float dt) {
     if (in.ok()) {
         if (unlocked) {
             audio::play(audio::SfxUiSelect, 0.9f);
+            save::save();
             app().pushOverlay(std::make_unique<BriefingOverlay>());
         } else {
             audio::play(audio::SfxHit, 0.4f, 0.55f);
         }
     }
-    if (in.back()) app().go(Sid::Title);
+    if (in.back()) {
+        save::save();
+        app().go(Sid::Title);
+    }
 
     Rectangle go{1470, 828, 360, 118};
     if (ui::Hover(go) && in.lmbPressed) {
         if (unlocked) {
             audio::play(audio::SfxUiSelect, 0.9f);
+            save::save();
             app().pushOverlay(std::make_unique<BriefingOverlay>());
         } else {
             audio::play(audio::SfxHit, 0.4f, 0.55f);
         }
     }
     Rectangle backBtn{56, 44, 150, 62};
-    if (ui::Hover(backBtn) && in.lmbPressed) app().go(Sid::Title);
+    if (ui::Hover(backBtn) && in.lmbPressed) {
+        save::save();
+        app().go(Sid::Title);
+    }
 }
 
 void HangarScreen::drawWorld() {
@@ -269,8 +339,13 @@ void HangarScreen::drawStrip() {
             float lx = r.x + r.width * 0.5f, ly = r.y + 76;
             DrawRectangle((int)lx - 12, (int)ly - 4, 24, 20, WithAlpha(pal::kDim, 0.5f));
             DrawRectangleLinesEx({lx - 7, ly - 16, 14, 14}, 3, WithAlpha(pal::kDim, 0.5f));
-        } else if (save::data().craft == i) {
-            ui::Triangle(r.x + r.width - 22, r.y + 22, 14, 1, pal::kCyan);
+        } else {
+            // 选中的机体角标：双人时 1P / 2P 都要标出来
+            bool p1 = (craftSel_[0] == i);
+            bool p2 = (match::cfg().players() > 1 && craftSel_[1] == i);
+            if (p1) ui::Text("1P", r.x + r.width - 46, r.y + 12, 16, WithAlpha(pal::kCyan, 0.9f), true);
+            if (p2) ui::Text("2P", r.x + r.width - 46, r.y + (p1 ? 36 : 12), 16,
+                             WithAlpha(pal::kGold, 0.9f), true);
         }
         if (sel) {
             ui::TextC(assets::players[i].role, r.x + r.width * 0.5f, r.y + 74, 20,
@@ -345,6 +420,19 @@ void HangarScreen::draw() {
     drawStatPanel();
     drawStrip();
 
+    // 双人：面板右上角显示正在配机的是 1P 还是 2P
+    if (match::cfg().players() > 1) {
+        for (int i = 0; i < 2; i++) {
+            Rectangle chip{kHangarPanel.x + kHangarPanel.width - 172 + i * 82.0f, kHangarPanel.y + 22, 74, 36};
+            bool on = (slot_ == i);
+            Color ac = (i == 1) ? pal::kGold : pal::kCyan;
+            ui::Panel(chip, on ? WithAlpha(ac, 0.22f) : WithAlpha(WHITE, 0.05f),
+                      on ? ac : WithAlpha(pal::kDim, 0.3f), 6, on ? 2.0f : 1.0f);
+            ui::TextC(i == 0 ? "1P" : "2P", chip.x + chip.width * 0.5f, chip.y + 7, 20,
+                      on ? pal::kText : WithAlpha(pal::kDim, 0.8f), true);
+        }
+    }
+
     const auto& c = assets::players[craft_];
     bool unlocked = c.unlocked;
 
@@ -364,8 +452,15 @@ void HangarScreen::draw() {
         ui::TextC("击毁 40 个后开启", bx + 180, by + 56, 20, WithAlpha(pal::kDim, 0.9f));
     }
 
-    ui::TextC("左右键 换机体    C 换色    ENTER 出击    ESC 返回", VW * 0.5f, VH - 56, 20,
-              WithAlpha(pal::kDim, 0.5f));
+    if (match::cfg().players() > 1) {
+        ui::TextC("TAB 换人    C 换色    ENTER 出击    ESC 返回", VW * 0.5f, VH - 86, 20,
+                  WithAlpha(pal::kDim, 0.55f));
+        ui::TextC("1P  WASD  J  K  L        2P  方向键  1  2  3", VW * 0.5f, VH - 54, 19,
+                  WithAlpha(pal::kDim, 0.45f));
+    } else {
+        ui::TextC("左右键 换机体    C 换色    ENTER 出击    ESC 返回", VW * 0.5f, VH - 56, 20,
+                  WithAlpha(pal::kDim, 0.5f));
+    }
 }
 
 // ---------------------------------------------------------------- 简报
@@ -398,22 +493,36 @@ void BriefingOverlay::draw() {
     DrawRectangleGradientV((int)x, 0, 520, 220, WithAlpha(pal::kCyan, 0.08f), BLANK);
 
     ui::Text("出击简报", x + 56, 96, 44, pal::kText, true);
-    ui::Text("远洋巡航", x + 56, 156, 24, WithAlpha(pal::kCyan, 0.85f));
+    const bool versus = match::cfg().versus();
+    const char* modeName = match::cfg().lan() ? "联机对战" : "同屏对战";
+    if (!versus) modeName = match::cfg().lan() ? "联机合作" : (match::cfg().players() > 1 ? "同屏合作" : "远洋巡航");
+    ui::Text(modeName, x + 56, 156, 24, WithAlpha(pal::kCyan, 0.85f));
     DrawRectangle((int)x + 56, (int)208, 408, 2, WithAlpha(pal::kCyan, 0.25f));
 
     ui::Text("任务", x + 56, 244, 22, WithAlpha(pal::kCyan, 0.9f), true);
-    ui::Text("击毁 40 个敌机，", x + 56, 284, 24, WithAlpha(pal::kText, 0.92f));
-    ui::Text("并击破雷暴要塞。", x + 56, 320, 24, WithAlpha(pal::kText, 0.92f));
+    if (versus) {
+        ui::Text("击破对方战机，", x + 56, 284, 24, WithAlpha(pal::kText, 0.92f));
+        ui::Text("先清空对方装甲。", x + 56, 320, 24, WithAlpha(pal::kText, 0.92f));
+    } else {
+        ui::Text("击毁 40 个敌机，", x + 56, 284, 24, WithAlpha(pal::kText, 0.92f));
+        ui::Text("并击破雷暴要塞。", x + 56, 320, 24, WithAlpha(pal::kText, 0.92f));
+    }
 
     ui::Text("标准", x + 56, 392, 22, WithAlpha(pal::kCyan, 0.9f), true);
-    ui::Text("击毁 40 个", x + 56, 430, 21, WithAlpha(pal::kDim, 0.95f));
-    ui::Text("生命 2 个以上", x + 56, 462, 21, WithAlpha(pal::kDim, 0.95f));
-    for (int i = 0; i < 3; i++) ui::Star(x + 74 + i * 52, 530, 19, pal::kGold, true);
+    ui::Text(versus ? "装甲归零即失败" : "击毁 40 个", x + 56, 430, 21, WithAlpha(pal::kDim, 0.95f));
+    ui::Text(versus ? "对战不计时" : "生命 2 个以上", x + 56, 462, 21, WithAlpha(pal::kDim, 0.95f));
+    if (!versus) {
+        for (int i = 0; i < 3; i++) ui::Star(x + 74 + i * 52, 530, 19, pal::kGold, true);
+    }
 
     ui::Text("机体", x + 56, 600, 22, WithAlpha(pal::kCyan, 0.9f), true);
-    ui::Text(assets::players[clampi(save::data().craft, 0, 5)].id, x + 56, 638, 32, pal::kText, true);
-    ui::Text(assets::players[clampi(save::data().craft, 0, 5)].role, x + 56, 682, 21,
-             WithAlpha(pal::kDim, 0.9f));
+    const auto& c1 = assets::players[clampi(match::cfg().craft[0], 0, 5)];
+    ui::Text(std::string(match::cfg().players() > 1 ? "1P  " : "") + c1.id, x + 56, 638, 32, pal::kText, true);
+    ui::Text(c1.role, x + 56, 682, 21, WithAlpha(pal::kDim, 0.9f));
+    if (match::cfg().players() > 1) {
+        const auto& c2 = assets::players[clampi(match::cfg().craft[1], 0, 5)];
+        ui::Text("2P  " + c2.id, x + 56, 722, 26, WithAlpha(pal::kGold, 0.95f), true);
+    }
 
     Rectangle go{x + 56, 764, 408, 96};
     bool hov = ui::Hover(go);

@@ -30,7 +30,7 @@ target_include_directories(SkyStriker PRIVATE
 target_link_directories(SkyStriker PRIVATE "${RAYLIB_DIR}/lib")
 
 if(WIN32)
-    target_link_libraries(SkyStriker PRIVATE raylib opengl32 gdi32 winmm shell32)
+    target_link_libraries(SkyStriker PRIVATE raylib opengl32 gdi32 winmm shell32 ws2_32)
 else()
     target_link_libraries(SkyStriker PRIVATE raylib)
 endif()
