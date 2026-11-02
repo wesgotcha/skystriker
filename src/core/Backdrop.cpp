@@ -69,7 +69,9 @@ void Backdrop::update(float dt) {
     offSea_ += v * 1.0f;
     if (preset_ == Storm) {
         offRainX_ += v * 2.1f;
-        offRainY_ += v * 1.2f;
+        // 雨往下落：offset 减小时 DrawTiledXY 的起始 y 才会逐帧增大（向下平移）。
+        // 之前是 +=，整层雨在往上飘。
+        offRainY_ -= v * 2.6f;
     }
     if (preset_ != Ocean || !propsEnabled) return;
 
@@ -127,13 +129,14 @@ void Backdrop::draw() {
     if (preset_ == Ocean) {
         if (assets::oceanSky.id) DrawTexture(assets::oceanSky, 0, 0, A(WHITE));
         DrawTiledX(assets::oceanCloudFar, 60, assets::oceanCloudFar.height * 1.0f, offFar_, A(WHITE));
-        DrawTiledX(assets::oceanCloudNear, 130, assets::oceanCloudNear.height * 1.15f, offNear_,
-                   A(WithAlpha(WHITE, 0.96f)));
-        // 海面
+        // 海面。海平线不需要额外的白色雾带：sea_tile 自带渐变，硬边的雾条反而会在
+        // 天空上横着糊出一条白带（以前踩过）。
         float seaTop = 300.0f, seaH = VH - seaTop;
         DrawTiledX(assets::oceanSea, seaTop, seaH, offSea_, A(WHITE));
-        // 这里原本压了一条"顶部 0.5 白 → 底部透明"的亮雾来盖接缝，但它的上边缘是
-        // 硬边，会在天空上横着糊出一条白带。sea_tile 自带海平线渐变，不需要再补。
+        // 近景云压在海面之上：之前画在 sea 前面，云脚全被海水盖掉了。
+        // （海里漂的岛屿/航母由 drawProps() 在更后面画，仍然在云前面）
+        DrawTiledX(assets::oceanCloudNear, 130, assets::oceanCloudNear.height * 1.15f, offNear_,
+                   A(WithAlpha(WHITE, 0.96f)));
         return;
     }
 
