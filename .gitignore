@@ -16,6 +16,13 @@
 /models/*/*/glTF/*_mesh.gltf
 /models/*/*/Textures/opt/
 
+# ================================================================ 未参与运行的模型源格式
+# 运行时只加载 glTF（Assets.cpp 的 ModelPath）＋ Textures/ 里的配色图。
+# Blend 是 Blender 源文件，FBX / OBJ 是导出中间格式，三者都不进版本库。
+/models/*/*/Blend/
+/models/*/*/FBX/
+/models/*/*/OBJ/
+
 # ================================================================ 开发期临时文件
 /vendor/raylib.zip
 /vendor/smoke.cpp
