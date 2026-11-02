@@ -120,22 +120,79 @@ bool App::init(int argc, char** argv) {
     // 允许从 build/ 或工程根目录启动
     if (!DirectoryExists("assets") && DirectoryExists("../assets")) ChangeDirectory("..");
 
-    float dpi = platform::DpiScale();
-    int w = (int)(1280 * dpi);
-    int h = (int)(720 * dpi);
-    if (forceW > 0 && forceH > 0) { w = forceW; h = forceH; }
-    int mw = platform::MonitorWidth(), mh = platform::MonitorHeight();
-    if (w > mw - 80) { float k = (mw - 80.0f) / w; w = (int)(w * k); h = (int)(h * k); }
-    if (h > mh - 120) { float k = (mh - 120.0f) / h; w = (int)(w * k); h = (int)(h * k); }
+    // ---- 窗口尺寸 / 位置 --------------------------------------------------
+    // 单位陷阱：开了 DPI 感知之后，GLFW 把 InitWindow/SetWindowSize 的尺寸当作
+    // "屏幕坐标"，内部还会乘一次显示器缩放。200% 缩放下 InitWindow(2560,1440)
+    // 拿到的是 5120x2880 的帧缓冲 —— 比显示器还大，而且它按缩放前的坐标算居中，
+    // 结果是负坐标：窗口大半挂在屏幕外。现象就是"画面卡在左上角"。
+    // 所以：对外一律按物理像素规划，交给 raylib 之前再除以 DPI。
+    float dpiScale = platform::DpiScale();
+    if (dpiScale <= 0.0f) dpiScale = 1.0f;
+
+    int areaX = 0, areaY = 0, areaW = 0, areaH = 0;
+    platform::WorkArea(&areaX, &areaY, &areaW, &areaH);
+    if (areaW <= 0 || areaH <= 0) {
+        areaX = areaY = 0;
+        areaW = platform::MonitorWidth();
+        areaH = platform::MonitorHeight();
+    }
+
+    int physW = 0, physH = 0;
+    if (forceW > 0 && forceH > 0) {
+        physW = forceW;
+        physH = forceH;
+    } else {
+        // 默认：工作区里能放下的最大 16:9。横向留 48px，纵向留 72px
+        // （纵向要把标题栏+边框算进去，否则窗口整体比可用区域还高）。
+        int availW = std::max(640, areaW - 48);
+        int availH = std::max(360, areaH - 72);
+        if (availW * 9 >= availH * 16) {  // 屏幕够宽 → 被高度限制
+            physH = availH;
+            physW = (int)std::lround(physH * 16.0 / 9.0);
+        } else {
+            physW = availW;
+            physH = (int)std::lround(physW * 9.0 / 16.0);
+        }
+    }
+
+    int reqW = (int)std::lround(physW / dpiScale);
+    int reqH = (int)std::lround(physH / dpiScale);
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
-    InitWindow(w, h, "SKY STRIKER");
+    InitWindow(reqW, reqH, "SKY STRIKER");
     SetExitKey(KEY_NULL);
     SetTargetFPS(60);
 
+    // 兜底：多显示器/不同缩放组合下，GetDpiForSystem() 和 GLFW 实际用的内容缩放
+    // 可能不一致（窗口就会比工作区还大）。这里按"实测缩放"（帧缓冲 / 屏幕坐标）
+    // 重设一次尺寸，保证任何 DPI 组合下窗口都装得下。
+    {
+        int swNow = GetScreenWidth();
+        float real = swNow > 0 ? (float)GetRenderWidth() / (float)swNow : dpiScale;
+        if (real > 0.01f && std::fabs(real - dpiScale) > 0.01f) {
+            SetWindowSize((int)std::lround(physW / real), (int)std::lround(physH / real));
+            dpiScale = real;
+        }
+    }
+
+    // 自己摆一次窗口：raylib 的默认居中是按缩放前的坐标算的，高分屏会偏出屏幕。
+    // 这里按"整个窗口（含标题栏）的物理矩形"居中，任何 DPI 下都稳稳落在工作区正中。
+    platform::CenterWindow(GetWindowHandle(), areaX, areaY, areaW, areaH);
+
     winW = GetRenderWidth();
     winH = GetRenderHeight();
+    winSW = GetScreenWidth();
+    winSH = GetScreenHeight();
     updateCanvas();
+    if (timeLoad) {
+        Vector2 wp = GetWindowPosition();
+        printf("[win] dpiScale=%.2f area=%d,%d %dx%d req=%dx%d -> pos=%.0f,%.0f screen=%dx%d "
+               "render=%dx%d canvas=%dx%d scale=%.2f origin=%.0f,%.0f\n",
+               (double)dpiScale, areaX, areaY, areaW, areaH, reqW, reqH, (double)wp.x, (double)wp.y,
+               GetScreenWidth(), GetScreenHeight(), winW, winH, canvas.texture.width,
+               canvas.texture.height, (double)scale, (double)origin.x, (double)origin.y);
+        fflush(stdout);
+    }
     lap("window");
 
     Image icon = LoadImage("assets/logo/logo_sky_striker.png");
@@ -145,12 +202,6 @@ bool App::init(int argc, char** argv) {
         UnloadImage(icon);
     }
     lap("icon");
-
-    // 转场用的每格随机延迟
-    Rng rng;
-    rng.seed(1337);
-    for (int x = 0; x < 24; x++)
-        for (int y = 0; y < 14; y++) cellDelay_[x][y] = rng.range(0.0f, 0.85f);
 
     audio::init();
     lap("audio");
@@ -183,10 +234,17 @@ void App::updateCanvas() {
     if (sw <= 0 || sh <= 0 || rw <= 0 || rh <= 0) return;
     dpi = (float)rw / (float)sw;
 
+    // 画布按"能完整装下 1920x1080"的比例渲染（fit），再由 endCanvas 居中贴到窗口。
+    // 上限给到 3.0：2K 是 1.33、4K 正好 2.0，都能按原生像素出图；老代码卡在 2.0
+    // 会让更大的屏（或 200% 缩放下的 2K+ 窗口）被强行降采样。
     float s = std::min(rw / VW, rh / VH);
-    s = clampf(s, 0.35f, 2.0f);
-    int cw = (int)std::round(VW * s), ch = (int)std::round(VH * s);
-    scale = s;
+    s = clampf(s, 0.25f, 3.0f);
+    int cw = (int)std::ceil(VW * s), ch = (int)std::ceil(VH * s);
+    // 取整误差：跟窗口差 1px 以内就直接补满，否则边上会留一条 1px 暗线
+    if (rw > cw && rw - cw <= 2) cw = rw;
+    if (rh > ch && rh - ch <= 2) ch = rh;
+    // 缩放比反过来对齐画布尺寸，保证整个画布都被画满（多出的不到 1px 会被裁掉）
+    scale = std::max((float)cw / VW, (float)ch / VH);
     size = {(float)cw, (float)ch};
     origin = {std::floor((rw - cw) * 0.5f), std::floor((rh - ch) * 0.5f)};
     if (canvas.id != 0 && canvas.texture.width == cw && canvas.texture.height == ch) return;
@@ -216,11 +274,21 @@ void App::end2D() { EndMode2D(); }
 void App::endCanvas() {
     EndTextureMode();
     BeginDrawing();
-    ClearBackground(BLACK);
+    ClearBackground(pal::kInk);
+
+    // 物理像素 → 窗口 2D 逻辑坐标（raylib 的 2D 空间按逻辑尺寸铺）
     Rectangle src{0, 0, (float)canvas.texture.width, -(float)canvas.texture.height};
-    // origin/size 是物理像素，这里换算回 2D 逻辑坐标（raylib 的 2D 空间按逻辑尺寸铺）
+
+    // 画布在窗口里居中：16:9 的窗口正好铺满，其它比例两端留沉稳的暗色边。
+    // （试过用"同一帧压暗铺底"去填那两条，会看到重影的 logo / 镜像的云，
+    // 比干净的黑边难看得多，已弃用。）
     Rectangle dst{origin.x / dpi, origin.y / dpi, size.x / dpi, size.y / dpi};
     DrawTexturePro(canvas.texture, src, dst, {0, 0}, 0.0f, WHITE);
+
+    // 转场遮罩铺在整屏而不是画布里：否则非 16:9 窗口的补边不会被一起压暗，
+    // 淡出时会留下两条亮边在闪。
+    drawTransition();
+
     if (!seqDir.empty() && seqLeft > 0) {
         rlDrawRenderBatchActive();  // 先把批次刷进帧缓冲，否则读到黑屏
         Image img = LoadImageFromScreen();
@@ -236,7 +304,10 @@ void App::endCanvas() {
 void App::updateInput() {
     // 用物理尺寸判断是否变化：跨屏拖动时逻辑尺寸可能不变，但 DPI 变了
     int w = GetRenderWidth(), h = GetRenderHeight();
-    if (w != winW || h != winH) {
+    int sw = GetScreenWidth(), sh = GetScreenHeight();
+    if (w != winW || h != winH || sw != winSW || sh != winSH) {
+        winSW = sw;
+        winSH = sh;
         winW = w;
         winH = h;
         updateCanvas();
@@ -263,20 +334,28 @@ void App::updateInput() {
 }
 
 void App::toggleFullscreen() {
-    if (!IsWindowState(FLAG_WINDOW_UNDECORATED) && !IsWindowFullscreen()) {
+    if (!optFullscreen) {
+        // 进全屏前记下窗口尺寸/位置（屏幕坐标），退出时原样还回去：
+        // 原来直接 SetWindowSize(1280*dpi, 720*dpi)，在 200% 缩放下等于
+        // 2560x1440 个"屏幕坐标" = 5120x2880 物理像素，比屏幕还大。
+        savedW_ = GetScreenWidth();
+        savedH_ = GetScreenHeight();
+        Vector2 wp = GetWindowPosition();
+        savedX_ = (int)wp.x;
+        savedY_ = (int)wp.y;
+
         int m = GetCurrentMonitor();
-        // SetWindowSize 吃的是逻辑尺寸，GetMonitorWidth 给的是物理像素：125% 缩放下
-        // 直接传会把窗口撑到屏幕外
+        // GetMonitorWidth 给的是物理像素，SetWindowSize 吃的是屏幕坐标（内部再乘 DPI）
         float k = platform::DpiScale();
         if (k <= 0.0f) k = 1.0f;
         SetWindowSize((int)std::lround(GetMonitorWidth(m) / k), (int)std::lround(GetMonitorHeight(m) / k));
-        if (!IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE)) {
-            SetWindowState(FLAG_BORDERLESS_WINDOWED_MODE);
-        }
+        SetWindowState(FLAG_BORDERLESS_WINDOWED_MODE);
+        SetWindowPosition(0, 0);
         optFullscreen = true;
     } else {
         ClearWindowState(FLAG_BORDERLESS_WINDOWED_MODE);
-        SetWindowSize((int)(1280 * platform::DpiScale()), (int)(720 * platform::DpiScale()));
+        SetWindowSize(savedW_ > 0 ? savedW_ : 1280, savedH_ > 0 ? savedH_ : 720);
+        SetWindowPosition(savedX_, savedY_);
         optFullscreen = false;
     }
     winW = GetRenderWidth();
@@ -298,6 +377,16 @@ void App::goNow(Sid id) {
     if (cur_) cur_->leave();
     cur_ = MakeScreen(id);
     if (cur_) cur_->enter();
+}
+
+void App::beginIntro() {
+    // 不留黑场：当前帧就把主菜单换上来，logo 停在启动屏那一帧的位置，
+    // 由 TitleScreen 的入场动画继续把它抬到菜单标题位。
+    introPending = true;
+    trans.active = false;
+    trans.t = 0.0f;
+    clearOverlaysNow();
+    goNow(Sid::Title);
 }
 
 void App::pushOverlay(std::unique_ptr<Screen> ov) {
@@ -340,19 +429,15 @@ void App::clearOverlaysNow() {
 }
 
 void App::drawTransition() {
+    // 全屏淡黑：0 → 0.5 压到全黑（此时换屏），0.5 → 1 再揭开。
+    // 用 smoothstep 让两端速度为 0，不会出现"啪"一下变黑/变亮的跳变。
+    // （原来是 24x14 的像素格随机翻黑，动画感强但碎、换屏时噪点多，已弃用。）
     if (!trans.active) return;
-    float t = trans.t;
-    float phase = t < 0.5f ? t * 2.0f : (t - 0.5f) * 2.0f;
-    bool  cover = t < 0.5f;
-    float cw = VW / 24.0f, chh = VH / 14.0f;
-    for (int x = 0; x < 24; x++) {
-        for (int y = 0; y < 14; y++) {
-            float a = clampf((phase - cellDelay_[x][y] * 0.9f) / 0.10f, 0, 1);
-            if (!cover) a = 1.0f - a;
-            if (a <= 0.01f) continue;
-            DrawRectangle((int)(x * cw), (int)(y * chh), (int)cw + 1, (int)chh + 1, WithAlpha(BLACK, a));
-        }
-    }
+    float t = clampf(trans.t, 0.0f, 1.0f);
+    float a = (t < 0.5f) ? (t * 2.0f) : (1.0f - (t - 0.5f) * 2.0f);
+    a = a * a * (3.0f - 2.0f * a);
+    if (a <= 0.002f) return;
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), WithAlpha(BLACK, a));
 }
 
 void App::run() {
@@ -438,7 +523,6 @@ void App::run() {
         if (cur_) cur_->draw();
         // 用下标遍历：draw() 里若 push 了新覆盖层，迭代器会失效
         for (size_t i = 0; i < overlays_.size(); i++) overlays_[i]->draw();
-        drawTransition();
         end2D();
         endCanvas();
         if (!seqDir.empty() && seqLeft <= 0) requestExit = true;

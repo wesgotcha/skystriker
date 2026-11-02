@@ -31,6 +31,13 @@ inline float approach(float cur, float target, float step) {
 // 0..1 的缓动
 inline float easeOutCubic(float t) { t = clampf(t, 0, 1); float u = 1 - t; return 1 - u * u * u; }
 inline float easeInCubic(float t) { t = clampf(t, 0, 1); return t * t * t; }
+// 两头速度为 0 的 S 曲线：位移用它起步/收尾都不会"顿一下"
+inline float easeInOutCubic(float t) {
+    t = clampf(t, 0, 1);
+    if (t < 0.5f) return 4.0f * t * t * t;
+    float u = -2.0f * t + 2.0f;
+    return 1.0f - (u * u * u) * 0.5f;
+}
 inline float easeOutBack(float t) {
     t = clampf(t, 0, 1);
     const float c1 = 1.70158f, c3 = c1 + 1.0f;

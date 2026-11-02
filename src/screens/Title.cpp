@@ -19,6 +19,13 @@ void TitleScreen::enter() {
     bg_.setup(Backdrop::Dusk);
     t_ = 0;
     focus_ = 0;
+    mouseMode_ = false;
+
+    // 刚从启动屏过来：画面还是全黑、logo 停在启动屏那个位置，从这里接着演入场。
+    // 其它入口（机库返回 / 调试直达 --screen=title）直接就位，不重播开场。
+    intro_ = app().introPending ? 0.0f : 1.0f;
+    app().introPending = false;
+    bg_.setAlpha(intro_ >= 1.0f ? 1.0f : 0.0f);
 }
 
 void TitleScreen::activate(int idx) {
@@ -54,7 +61,19 @@ void TitleScreen::activate(int idx) {
 
 void TitleScreen::update(float dt) {
     t_ += dt;
+
+    if (intro_ < 1.0f) {
+        intro_ = clampf(intro_ + dt / intro::kDur, 0.0f, 1.0f);
+        // 任意输入可以跳过开场，但这一次不再传给菜单。
+        // 不然"按任意键继续"的那一下会直接把"开始游戏"按掉。
+        auto& in = app().in;
+        if (in.anyKey || in.lmbPressed || in.ok() || in.back()) intro_ = 1.0f;
+    }
+    // 背景跟着开场一起淡入：前 70% 的时间就铺满，收尾时已经完全亮起来
+    bg_.setAlpha(easeOutCubic(intro_ / 0.70f));
     bg_.update(dt);
+
+    if (intro_ < 1.0f) return;  // 开场期间不吃菜单输入
 
     bool canContinue = save::data().runs > 0;
     int prev = focus_;
@@ -91,11 +110,28 @@ void TitleScreen::update(float dt) {
 void TitleScreen::drawWorld() { bg_.draw(); }
 
 void TitleScreen::draw() {
+    // 开场衔接：logo 从启动屏的位置（720 宽 / 顶边 400）平移到菜单标题位（900 / 180）。
+    // 起点和 BootScreen 用的是同一组常量，交接那一帧完全重合，看不出换屏。
+    float k = easeInOutCubic(intro_);
+    float lw = lerpf(intro::kBootLogoW, intro::kTitleLogoW, k);
+    float ly = lerpf(intro::kBootLogoY, intro::kTitleLogoY, k);
+    float lgh = lw * intro::kLogoAspect;
+
+    // 信息条 / 菜单淡入：比 logo 晚一点起步，和 logo 同时收尾；顺带整体上浮一点
+    float uiA = clampf((intro_ - 0.32f) / 0.55f, 0.0f, 1.0f);
+    uiA = uiA * uiA * (3.0f - 2.0f * uiA);
+    float rise = (1.0f - uiA) * 18.0f;
+    auto F = [uiA](Color c) {
+        c.a = (unsigned char)clampf(c.a * uiA, 0.0f, 255.0f);
+        return c;
+    };
+
     // 菜单区域压暗，保证文字在亮云上可读。
     // 关键是两端都收成 alpha 0：DrawRectangleGradientV 只有一端是透明的，
     // 另一端会留下一条横贯画面的硬边（看起来就像"贴了一层浅色遮罩"）。
-    auto band = [](float y0, float y1, float a0, float a1) {
-        DrawRectangleGradientV(0, (int)y0, (int)VW, (int)(y1 - y0), WithAlpha(BLACK, a0), WithAlpha(BLACK, a1));
+    auto band = [&](float y0, float y1, float a0, float a1) {
+        DrawRectangleGradientV(0, (int)y0, (int)VW, (int)(y1 - y0), F(WithAlpha(BLACK, a0)),
+                               F(WithAlpha(BLACK, a1)));
     };
     band(0, 130, 0.45f, 0.0f);     // 顶部信息条
     band(468, 566, 0.0f, 0.52f);   // 淡入
@@ -105,20 +141,17 @@ void TitleScreen::draw() {
     // 顶部信息
     char buf[64];
     snprintf(buf, sizeof buf, "HI-SCORE %07d", save::data().hiScore);
-    ui::Text(buf, 56, 44, 22, WithAlpha(pal::kCyan, 0.85f));
-    ui::TextR("v0.1.0", VW - 56, 44, 22, WithAlpha(pal::kDim, 0.7f));
+    ui::Text(buf, 56, 44, 22, F(WithAlpha(pal::kCyan, 0.85f)));
+    ui::TextR("v0.1.0", VW - 56, 44, 22, F(WithAlpha(pal::kDim, 0.7f)));
 
-    // Logo：从上方落下（4 帧阶梯）
-    float drop = stepped(clampf(t_ / 0.55f, 0, 1), 4);
-    float ly = lerpf(120.0f, 180.0f, drop);
-    float lw = 900.0f, lgh = 900.0f * (437.0f / 1299.0f);
+    // Logo
     if (assets::logoTex.id) {
         Rectangle src{0, 0, (float)assets::logoTex.width, (float)assets::logoTex.height};
         DrawTexturePro(assets::logoTex, src, {VW * 0.5f - lw * 0.5f, ly, lw, lgh}, {0, 0}, 0, WHITE);
     }
 
     // 菜单
-    float startY = 536.0f, lh = 72.0f;
+    float startY = 536.0f + rise, lh = 72.0f;
     bool canContinue = save::data().runs > 0;
     for (int i = 0; i < 5; i++) {
         bool sel = (focus_ == i);
@@ -131,19 +164,20 @@ void TitleScreen::draw() {
         Color c = !enabled ? Color{96, 108, 122, 255} : (sel ? pal::kCyan : Color{186, 202, 218, 255});
         if (sel) {
             // 选中发光：三层同色描边字
-            for (int k = 3; k >= 1; k--)
-                ui::TextC(kMenu[i], tx, y + 2, 40 + k, WithAlpha(pal::kCyan, 0.10f), true);
+            for (int kk = 3; kk >= 1; kk--)
+                ui::TextC(kMenu[i], tx, y + 2, 40 + kk, F(WithAlpha(pal::kCyan, 0.10f)), true);
             ui::Triangle(tx - ui::TextW(kMenu[i], 40, true) * 0.5f - 46 + float_ * 0.3f, y + 26, 20, 1,
-                         WithAlpha(pal::kCyan, 0.9f));
+                         F(WithAlpha(pal::kCyan, 0.9f)));
             ui::Triangle(tx + ui::TextW(kMenu[i], 40, true) * 0.5f + 46 - float_ * 0.3f, y + 26, 20, -1,
-                         WithAlpha(pal::kCyan, 0.9f));
+                         F(WithAlpha(pal::kCyan, 0.9f)));
         }
-        ui::TextShadow(kMenu[i], tx - ui::TextW(kMenu[i], 40, sel) * 0.5f, y, 40, c, WithAlpha(BLACK, 0.6f), sel);
+        ui::TextShadow(kMenu[i], tx - ui::TextW(kMenu[i], 40, sel) * 0.5f, y, 40, F(c),
+                       F(WithAlpha(BLACK, 0.6f)), sel);
     }
 
     // 底部提示
-    ui::TextC("上下键 选择     ENTER 确认", VW * 0.5f, VH - 74, 20, WithAlpha(pal::kDim, 0.55f));
-    ui::TextC("2.5D 空战弹幕", VW * 0.5f, VH - 44, 18, WithAlpha(pal::kDim, 0.4f));
+    ui::TextC("上下键 选择     ENTER 确认", VW * 0.5f, VH - 74, 20, F(WithAlpha(pal::kDim, 0.55f)));
+    ui::TextC("2.5D 空战弹幕", VW * 0.5f, VH - 44, 18, F(WithAlpha(pal::kDim, 0.4f)));
 }
 
 // ---------------------------------------------------------------- 确认框

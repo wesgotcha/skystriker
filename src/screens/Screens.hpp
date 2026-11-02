@@ -10,6 +10,17 @@
 
 namespace sky {
 
+// 开场衔接：启动屏的 logo 位 = 主菜单入场动画的起点。
+// 两屏共用同一组常量，交接的那一帧 logo 矩形完全一致，看不到位移/缩放跳变。
+namespace intro {
+constexpr float kLogoAspect = 437.0f / 1299.0f;  // logoTex 宽高比
+constexpr float kBootLogoW  = 720.0f;            // 启动屏 logo 宽度
+constexpr float kBootLogoY  = 400.0f;            // 启动屏 logo 顶边
+constexpr float kTitleLogoW = 900.0f;            // 主菜单 logo 宽度
+constexpr float kTitleLogoY = 180.0f;            // 主菜单 logo 顶边
+constexpr float kDur        = 0.85f;             // logo 归位总时长（秒）
+}  // namespace intro
+
 // ---------------------------------------------------------------- BOOT
 class BootScreen : public Screen {
 public:
@@ -94,6 +105,7 @@ private:
     float    focusF_ = 0;
     bool     mouseMode_ = false;
     float    menuY_ = 0;
+    float    intro_ = 1.0f;   // 开场衔接进度 0→1（1 = 已就位，不再播动画）
     void     activate(int idx);
 };
 

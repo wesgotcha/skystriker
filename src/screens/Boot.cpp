@@ -37,7 +37,9 @@ void BootScreen::update(float dt) {
         bool skip = app().in.anyKey && t_ > 0.6f;
         if (timeout || skip) {
             leaving_ = true;
-            app().go(Sid::Title);
+            // 不走进场转场：同一帧换成主菜单，logo 停在现在这个位置，
+            // 由 TitleScreen 的入场动画把它抬到菜单标题位（中间没有黑场）
+            app().beginIntro();
         }
     }
 }
@@ -47,16 +49,17 @@ void BootScreen::drawWorld() { DrawRectangle(0, 0, (int)VW, (int)VH, pal::kInk);
 void BootScreen::draw() {
     DrawRectangle(0, 0, (int)VW, (int)VH, pal::kInk);
 
-    // Logo：阶梯式缩放（4 档）
-    float appear = clampf(t_ / 0.4f, 0, 1);
-    float step = stepped(appear, 4);
-    float scale = lerpf(0.92f, 1.0f, step);
-    float alpha = clampf(t_ / 0.22f, 0, 1);
+    // Logo：缓入放大到满尺寸，结束时正好是 intro::kBootLogoW / kBootLogoY，
+    // 与主菜单入场动画的起点严丝合缝（这里是整段开场的第一拍，不量化成阶梯，
+    // 否则和后面平滑的平移接不上）。
+    float appear = easeOutCubic(t_ / 0.45f);
+    float scale = lerpf(0.96f, 1.0f, appear);
+    float alpha = clampf(t_ / 0.28f, 0, 1);
 
-    float w = 720.0f * scale, h = 720.0f * (437.0f / 1299.0f) * scale;
+    float w = intro::kBootLogoW * scale, h = intro::kBootLogoW * intro::kLogoAspect * scale;
     if (assets::logoTex.id) {
         Rectangle src{0, 0, (float)assets::logoTex.width, (float)assets::logoTex.height};
-        Rectangle dst{VW * 0.5f - w * 0.5f, 400.0f + (1.0f - step) * 14.0f, w, h};
+        Rectangle dst{VW * 0.5f - w * 0.5f, intro::kBootLogoY + (1.0f - appear) * 12.0f, w, h};
         DrawTexturePro(assets::logoTex, src, dst, {0, 0}, 0, WithAlpha(WHITE, alpha));
     }
 

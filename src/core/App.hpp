@@ -77,8 +77,11 @@ public:
     void run();
     void shutdown();
 
-    void go(Sid id);       // 带转场
+    void go(Sid id);       // 带转场（全屏淡黑）
     void goNow(Sid id);    // 立即
+    // 启动屏 → 主菜单专用：不用转场，logo 由 TitleScreen 的入场动画接着演，
+    // 中间不黑屏、不跳位（见 TitleScreen::intro）
+    void beginIntro();
 
     void pushOverlay(std::unique_ptr<Screen> ov);
     // 关闭覆盖层：延迟到本帧推进结束时才真正析构。
@@ -96,7 +99,8 @@ public:
     float    scale = 1.0f;      // 逻辑 → 画布像素
     Vector2  origin{0, 0};      // 画布在窗口中的左上角（物理像素）
     Vector2  size{0, 0};        // 画布尺寸（物理像素）
-    int      winW = 0, winH = 0;
+    int      winW = 0, winH = 0;      // 渲染尺寸（物理像素）
+    int      winSW = 0, winSH = 0;    // 窗口尺寸（屏幕坐标，用于感知 DPI 变化）
 
     void beginCanvas();
     void begin2D();
@@ -151,6 +155,9 @@ public:
 
     bool requestExit = false;
 
+    // 开场衔接标记：启动屏结束、主菜单还没播入场动画时为 true
+    bool introPending = false;
+
 private:
     App() = default;
     void updateCanvas();
@@ -165,8 +172,9 @@ private:
     int  pendingPop_ = 0;
     bool pendingClear_ = false;
     std::unique_ptr<Screen> pending_;
-    float cellDelay_[24][14]{};
     bool  inited_ = false;
+    // 全屏前的窗口状态，退出全屏时还原
+    int   savedW_ = 0, savedH_ = 0, savedX_ = 0, savedY_ = 0;
 };
 
 CameraRig& cameraRig();

@@ -86,6 +86,32 @@ int MonitorHeight() {
     return GetSystemMetrics(SM_CYSCREEN);
 }
 
+void WorkArea(int* x, int* y, int* w, int* h) {
+    RECT r{};
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &r, 0)) {
+        *x = 0;
+        *y = 0;
+        *w = MonitorWidth();
+        *h = MonitorHeight();
+        return;
+    }
+    *x = r.left;
+    *y = r.top;
+    *w = r.right - r.left;
+    *h = r.bottom - r.top;
+}
+
+void CenterWindow(void* hwnd, int areaX, int areaY, int areaW, int areaH) {
+    HWND h = (HWND)hwnd;
+    if (!h || areaW <= 0 || areaH <= 0) return;
+    RECT wr{};
+    if (!GetWindowRect(h, &wr)) return;
+    // 按"整个窗口"（含标题栏）算，只按客户区居中会让标题栏顶出屏幕
+    int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
+    SetWindowPos(h, nullptr, areaX + (areaW - ww) / 2, areaY + (areaH - wh) / 2, 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 #else
 
 void  EnableDpiAwareness() {}
@@ -93,6 +119,8 @@ void  SetupConsole(bool) {}
 float DpiScale() { return 1.0f; }
 int   MonitorWidth() { return 1920; }
 int   MonitorHeight() { return 1080; }
+void  WorkArea(int* x, int* y, int* w, int* h) { *x = 0; *y = 0; *w = 1920; *h = 1080; }
+void  CenterWindow(void*, int, int, int, int) {}
 
 #endif
 
