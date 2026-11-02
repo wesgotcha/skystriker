@@ -455,8 +455,13 @@ void HangarScreen::draw() {
     if (match::cfg().players() > 1) {
         ui::TextC("TAB 换人    C 换色    ENTER 出击    ESC 返回", VW * 0.5f, VH - 86, 20,
                   WithAlpha(pal::kDim, 0.55f));
-        ui::TextC("1P  WASD  J  K  L        2P  方向键  1  2  3", VW * 0.5f, VH - 54, 19,
-                  WithAlpha(pal::kDim, 0.45f));
+        if (match::cfg().online) {
+            ui::TextC("联机：双方同键位   WASD  移动   空格  射击   L  爆弹/闪避", VW * 0.5f,
+                      VH - 54, 19, WithAlpha(pal::kDim, 0.45f));
+        } else {
+            ui::TextC("1P  WASD  J  K  L        2P  方向键  1  2  3", VW * 0.5f, VH - 54, 19,
+                      WithAlpha(pal::kDim, 0.45f));
+        }
     } else {
         ui::TextC("左右键 换机体    C 换色    ENTER 出击    ESC 返回", VW * 0.5f, VH - 56, 20,
                   WithAlpha(pal::kDim, 0.5f));

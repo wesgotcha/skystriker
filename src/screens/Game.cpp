@@ -59,6 +59,23 @@ static Ctrl sampleCtrl(int slot) {
     Ctrl c;
     auto& in = app().in;
     bool solo = match::cfg().players() == 1;
+    bool online = match::cfg().online;
+
+    // 联机：本机只控制一名玩家（主机 0 / 客户端 1），两端必须用同一套键位，
+    // 绝不能按 slot 区分 1P/2P——否则主机 WASD、客户端方向键，操作体验不一致。
+    // 这里忽略 slot，两端都走标准 1P 键位（WASD + 空格/L + Shift 闪身）。
+    if (online) {
+        c.left = in.down(KEY_A);
+        c.right = in.down(KEY_D);
+        c.up = in.down(KEY_W);
+        c.down = in.down(KEY_S);
+        c.fire = in.down(save::data().keyFire) || in.down(KEY_SPACE);
+        c.bomb = in.down(save::data().keyBomb) || in.down(KEY_L);
+        bool shift = in.down(KEY_LEFT_SHIFT) || in.down(KEY_RIGHT_SHIFT);
+        c.dash = in.down(KEY_L) || (shift && (c.left || c.right || c.up || c.down));
+        return c;
+    }
+
     if (slot == 0) {
         c.left = in.down(KEY_A);
         c.right = in.down(KEY_D);
