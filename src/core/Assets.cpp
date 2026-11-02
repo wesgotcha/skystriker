@@ -141,6 +141,11 @@ Texture2D LoadTex(const char* path, bool pixelArt = false) {
         return t;
     }
     SetTextureFilter(t, pixelArt ? TEXTURE_FILTER_POINT : TEXTURE_FILTER_BILINEAR);
+    // 双线性采样在贴图边缘会越界取到"另一头"的像素（默认 wrap 是 REPEAT）：
+    // 海面顶层是透明渐隐、底层是不透明深水，取整时就会在 y=300 的海平线上
+    // 横着拉出一条 1px 的亮/暗细线。贴图都是整块 quad 画的（平铺是多次绘制），
+    // 不需要 REPEAT，统一 CLAMP 即可。
+    SetTextureWrap(t, TEXTURE_WRAP_CLAMP);
     return t;
 }
 
