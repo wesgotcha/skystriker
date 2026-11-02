@@ -6,6 +6,7 @@
 #include "Ui.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace sky {
@@ -14,13 +15,7 @@ namespace {
 
 Rectangle PanelRect() { return {370, 116, 1180, 780}; }
 
-// 排序页签：绘制与命中同源
-Rectangle TabRect(int i) {
-    Rectangle r = PanelRect();
-    return {r.x + 44 + i * 168.0f, r.y + 112, 156, 52};
-}
-
-constexpr float kRowTop = 262;  // 相对面板顶
+constexpr float kRowTop = 150;  // 相对面板顶（删掉排序页签后上移，填满顶部留白）
 constexpr float kRowH = 76;
 constexpr int   kRows = 6;
 
@@ -28,9 +23,20 @@ Rectangle RowRect(int i) {
     Rectangle r = PanelRect();
     return {r.x + 32, r.y + kRowTop + i * kRowH - 12, r.width - 64, kRowH - 12};
 }
+// 「复盘」按钮（重看那一局），靠右
 Rectangle RowBtnRect(int i) {
     Rectangle rr = RowRect(i);
-    return {rr.x + rr.width - 158, rr.y + 9, 132, 46};
+    return {rr.x + rr.width - 150 - 12, rr.y + 9, 150, 46};
+}
+// 「删除」按钮，在「复盘」按钮左侧
+Rectangle RowDelBtnRect(int i) {
+    Rectangle rr = RowRect(i);
+    return {rr.x + rr.width - 150 - 12 - 64 - 12, rr.y + 9, 64, 46};
+}
+// 底部「清空全部」按钮（二次确认后才会真删）
+Rectangle ClearBtnRect() {
+    Rectangle r = PanelRect();
+    return {r.x + 44, r.y + r.height - 78, 150, 46};
 }
 
 }  // namespace
@@ -64,47 +70,83 @@ void HistoryOverlay::play(int i) {
     app().go(Sid::Replay);
 }
 
+void HistoryOverlay::refresh() {
+    items_ = replay::List();
+    sortItems();
+    int n = (int)items_.size();
+    if (top_ > n - kRows) top_ = std::max(0, n - kRows);
+    if (top_ < 0) top_ = 0;
+}
+
+void HistoryOverlay::confirmDelete(int idx) {
+    if (idx < 0 || idx >= (int)items_.size()) return;
+    audio::play(audio::SfxUiSelect, 0.8f);
+    std::string when = items_[idx].when();
+    app().pushOverlay(std::make_unique<ConfirmOverlay>(
+        "删除记录", "删除这条记录（" + when + "）?",
+        [this, idx]() {
+            if (idx >= 0 && idx < (int)items_.size()) {
+                replay::Delete(items_[idx].path);
+                refresh();
+            }
+        },
+        "删除", "取消"));
+}
+
+void HistoryOverlay::confirmClear() {
+    if (items_.empty()) return;
+    audio::play(audio::SfxUiSelect, 0.8f);
+    app().pushOverlay(std::make_unique<ConfirmOverlay>(
+        "清空历史", "确定要清空全部战斗记录? 此操作不可恢复。",
+        [this]() {
+            replay::ClearAll();
+            refresh();
+        },
+        "清空", "取消"));
+}
+
 void HistoryOverlay::update(float dt) {
     t_ += dt;
     auto& in = app().in;
     const int n = (int)items_.size();
+    bool selMoved = false;
 
     if (in.back()) {
         app().popOverlay();
-        return;
-    }
-    if (in.navLeft() || in.navRight()) {
-        sort_ = (sort_ + 1) % 3;
-        audio::play(audio::SfxUiMove, 0.5f);
-        sortItems();
         return;
     }
     if (n > 0) {
         int prev = sel_;
         if (in.navUp()) sel_ = (sel_ + n - 1) % n;
         if (in.navDown()) sel_ = (sel_ + 1) % n;
-        if (sel_ != prev) audio::play(audio::SfxUiMove, 0.4f);
+        if (sel_ != prev) {
+            audio::play(audio::SfxUiMove, 0.4f);
+            selMoved = true;
+        }
         if (in.ok()) {
             play(sel_);
+            return;
+        }
+        if (in.pressed(KEY_DELETE)) {
+            confirmDelete(sel_);
             return;
         }
     }
 
     // ---- 鼠标
-    for (int i = 0; i < 3; i++) {
-        if (ui::Hover(TabRect(i)) && in.lmbPressed && sort_ != i) {
-            sort_ = i;
-            audio::play(audio::SfxUiMove, 0.5f);
-            sortItems();
-            return;
-        }
-    }
     for (int i = 0; i < kRows && top_ + i < n; i++) {
         int idx = top_ + i;
-        if (ui::Hover(RowRect(i)) && (in.mouseMoved || in.lmbPressed) && sel_ != idx) sel_ = idx;
+        if (ui::Hover(RowRect(i)) && (in.mouseMoved || in.lmbPressed) && sel_ != idx) {
+            sel_ = idx;
+            selMoved = true;
+        }
         if (!in.lmbPressed) continue;
         if (ui::Hover(RowBtnRect(i))) {
             play(idx);
+            return;
+        }
+        if (ui::Hover(RowDelBtnRect(i))) {
+            confirmDelete(idx);
             return;
         }
         if (ui::Hover(RowRect(i))) {
@@ -113,11 +155,26 @@ void HistoryOverlay::update(float dt) {
         }
     }
 
-    // 选中项保证在可视范围内
-    if (sel_ < top_) top_ = sel_;
-    if (sel_ >= top_ + kRows) top_ = sel_ - kRows + 1;
+    // 底部「清空全部」按钮
+    if (in.lmbPressed && ui::Hover(ClearBtnRect())) {
+        confirmClear();
+        return;
+    }
+
+    // 选中项保证在可视范围内：仅当选择真的变了才拉回，否则会把滚轮滚走的位置拽回来
+    if (selMoved) {
+        if (sel_ < top_) top_ = sel_;
+        if (sel_ >= top_ + kRows) top_ = sel_ - kRows + 1;
+    }
     if (top_ < 0) top_ = 0;
     if (n > kRows && top_ > n - kRows) top_ = n - kRows;
+
+    // 鼠标滚轮滚动列表：放在最后，只做边界夹紧，不强行把选择拉回可视区
+    if (n > kRows && in.wheel != 0.0f) {
+        top_ -= (int)std::round(in.wheel);
+        if (top_ < 0) top_ = 0;
+        if (n > kRows && top_ > n - kRows) top_ = n - kRows;
+    }
 }
 
 void HistoryOverlay::draw() {
@@ -126,31 +183,16 @@ void HistoryOverlay::draw() {
     ui::Panel(r, Color{6, 12, 22, 255}, WithAlpha(pal::kCyan, 0.6f), 14, 2);
     ui::Frame(r, WithAlpha(pal::kCyan, 0.3f), 14);
 
-    ui::TextC("作 战 复 盘", VW * 0.5f, r.y + 24, 46, pal::kText, true);
-    ui::TextC("每打完一盘就自动存下，点一行就能重看一次", VW * 0.5f, r.y + 82, 20,
-              WithAlpha(pal::kDim, 0.75f));
+    ui::TextC("历 史 战 绩", VW * 0.5f, r.y + 24, 46, pal::kText, true);
 
-    // 排序页签
-    const char* tabs[3] = {"最新", "得分", "时长"};
-    for (int i = 0; i < 3; i++) {
-        Rectangle tr = TabRect(i);
-        bool sel = (sort_ == i);
-        ui::Panel(tr, sel ? WithAlpha(pal::kCyan, 0.18f) : WithAlpha(WHITE, 0.04f),
-                  sel ? pal::kCyan : WithAlpha(pal::kDim, 0.3f), 8, 2);
-        ui::TextC(tabs[i], tr.x + tr.width * 0.5f, tr.y + 10, 26, sel ? pal::kText : pal::kDim, sel);
-    }
-    char cnt[32];
-    std::snprintf(cnt, sizeof cnt, "计 %d 条", (int)items_.size());
-    ui::TextR(cnt, r.x + r.width - 56, r.y + 124, 22, WithAlpha(pal::kDim, 0.85f));
-
-    // 列头
-    float hy = r.y + 214;
+    // 列头（红圈已删：副标题 / 排序页签 / 计数；蓝圈列头文字改为居中）
+    float hy = r.y + 96;
     const float cx = r.x;
     ui::Text("时间", cx + 106, hy, 20, WithAlpha(pal::kDim, 0.7f));
-    ui::Text("状态", cx + 398, hy, 20, WithAlpha(pal::kDim, 0.7f));
-    ui::TextR("得分", cx + 760, hy, 20, WithAlpha(pal::kDim, 0.7f));
-    ui::TextR("击毁", cx + 872, hy, 20, WithAlpha(pal::kDim, 0.7f));
-    ui::TextR("时长", cx + 984, hy, 20, WithAlpha(pal::kDim, 0.7f));
+    ui::TextC("状态", cx + 442, hy, 20, WithAlpha(pal::kDim, 0.7f));
+    ui::TextC("得分", cx + 644, hy, 20, WithAlpha(pal::kDim, 0.7f));
+    ui::TextC("击毁", cx + 780, hy, 20, WithAlpha(pal::kDim, 0.7f));
+    ui::TextC("时长", cx + 849, hy, 20, WithAlpha(pal::kDim, 0.7f));
     ui::Rect({cx + 44, hy + 34, r.width - 88, 1}, WithAlpha(pal::kCyan, 0.25f));
 
     if (items_.empty()) {
@@ -184,18 +226,26 @@ void HistoryOverlay::draw() {
         ui::TextC(m.win ? "完 成" : "失 败", badge.x + badge.width * 0.5f, badge.y + 6, 20, bc, true);
 
         std::snprintf(buf, sizeof buf, "%07d", m.score);
-        ui::TextR(buf, cx + 760, y, 27, sel ? pal::kGold : WithAlpha(pal::kGold, 0.85f), true);
+        ui::TextR(buf, cx + 700, y, 27, sel ? pal::kGold : WithAlpha(pal::kGold, 0.85f), true);
         std::snprintf(buf, sizeof buf, "%d", m.kills);
-        ui::TextR(buf, cx + 872, y + 2, 24, WithAlpha(pal::kDim, 0.95f));
-        ui::TextR(m.length(), cx + 984, y + 2, 24, WithAlpha(pal::kDim, 0.95f));
+        ui::TextR(buf, cx + 800, y + 2, 24, WithAlpha(pal::kDim, 0.95f));
+        ui::TextR(m.length(), cx + 878, y + 2, 24, WithAlpha(pal::kDim, 0.95f));
 
-        // 「复盘」按钮
+        // 「复盘」按钮（重看那一局）
         Rectangle rb = RowBtnRect(i);
         bool hov = ui::Hover(rb);
         ui::Panel(rb, hov ? WithAlpha(pal::kCyan, 0.26f) : WithAlpha(pal::kCyan, 0.07f),
                   hov ? pal::kCyan : WithAlpha(pal::kCyan, 0.45f), 6, hov ? 2.0f : 1.5f);
         ui::TextC("复 盘", rb.x + rb.width * 0.5f, rb.y + 10, 22, hov ? pal::kText : pal::kCyan, true);
         ui::Triangle(rb.x + 22, rb.y + rb.height * 0.5f, 9, 1, hov ? pal::kCyan : WithAlpha(pal::kCyan, 0.55f));
+
+        // 「删除」按钮（二次确认后真删）
+        Rectangle dlb = RowDelBtnRect(i);
+        bool dlhov = ui::Hover(dlb);
+        ui::Panel(dlb, dlhov ? WithAlpha(pal::kDanger, 0.30f) : WithAlpha(pal::kDanger, 0.10f),
+                  dlhov ? pal::kDanger : WithAlpha(pal::kDanger, 0.5f), 6, dlhov ? 2.0f : 1.5f);
+        ui::TextC("删除", dlb.x + dlb.width * 0.5f, dlb.y + 13, 20,
+                  dlhov ? pal::kText : WithAlpha(pal::kDanger, 0.9f), true);
 
         ui::Rect({cx + 44, rr.y + rr.height + 5, r.width - 88, 1}, WithAlpha(WHITE, 0.06f));
     }
@@ -211,8 +261,15 @@ void HistoryOverlay::draw() {
         ui::Rect({r.x + r.width - 24, yy, 4, hh}, WithAlpha(pal::kCyan, 0.6f));
     }
 
-    ui::TextC("上下键 选择    左右键 换分类    ENTER 复盘    ESC 返回", VW * 0.5f, r.y + r.height - 44, 20,
-              WithAlpha(pal::kDim, 0.6f));
+    // 底部「清空全部」按钮（有记录时才显示）
+    if (!items_.empty()) {
+        Rectangle cb = ClearBtnRect();
+        bool cbhov = ui::Hover(cb);
+        ui::Panel(cb, cbhov ? WithAlpha(pal::kDanger, 0.28f) : WithAlpha(pal::kDanger, 0.08f),
+                  cbhov ? pal::kDanger : WithAlpha(pal::kDanger, 0.5f), 8, cbhov ? 2.0f : 1.5f);
+        ui::TextC("清空全部", cb.x + cb.width * 0.5f, cb.y + 11, 22,
+                  cbhov ? pal::kText : WithAlpha(pal::kDanger, 0.9f), true);
+    }
 }
 
 }  // namespace sky

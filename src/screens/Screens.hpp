@@ -104,6 +104,9 @@ public:
 private:
     void sortItems();
     void play(int i);
+    void refresh();       // 重新扫描 replays/ 并重排（删除/清空后调用）
+    void confirmDelete(int idx);  // 弹二次确认后删除单条
+    void confirmClear();          // 弹二次确认后清空全部
     std::vector<replay::Meta> items_;
     int sort_ = 0;  // 0 最新 / 1 得分 / 2 时长
     int sel_ = 0;

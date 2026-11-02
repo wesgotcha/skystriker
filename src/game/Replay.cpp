@@ -345,4 +345,22 @@ bool HasAny() {
     return false;
 }
 
+void Delete(const std::string& path) {
+    std::error_code ec;
+    fs::remove(path, ec);
+    if (g_lastSaved == path) g_lastSaved.clear();
+}
+
+void ClearAll() {
+    std::error_code ec;
+    if (!fs::is_directory(kDir, ec)) return;
+    for (auto& e : fs::directory_iterator(kDir, ec)) {
+        if (ec) break;
+        if (!e.is_regular_file()) continue;
+        if (e.path().extension() != ".rep") continue;
+        fs::remove(e.path(), ec);
+    }
+    g_lastSaved.clear();
+}
+
 }  // namespace sky::replay

@@ -13,7 +13,7 @@ namespace sky {
 
 namespace {
 constexpr int kMenuCount = 7;
-const char* kMenu[kMenuCount] = {"开始游戏", "双    人", "继续游戏", "作战复盘",
+const char* kMenu[kMenuCount] = {"开始游戏", "双    人", "继续游戏", "历史战绩",
                                  "排    行", "设    置", "退    出"};
 constexpr float kMenuTop = 512.0f;
 constexpr float kMenuLH = 68.0f;

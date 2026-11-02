@@ -75,4 +75,7 @@ const std::string& LastSaved();       // 本局刚存下的那条（阵亡界面
 void        ClearLastSaved();
 bool        HasAny();
 
+void Delete(const std::string& path);  // 删除单条记录（历史面板「删除」用）
+void ClearAll();                       // 清空全部记录（历史面板「清空」用，二次确认后调用）
+
 }  // namespace sky::replay
