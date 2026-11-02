@@ -443,6 +443,8 @@ void App::drawTransition() {
 void App::run() {
     if (!shotPath.empty()) {
         // 预热若干秒，让动画/战斗进入稳定状态
+        // --state-log 在这里也生效（2Hz），方便回放 "第几秒发生了什么"
+        int logStep = -1;
         for (float t = 0; t < warpTime; t += 1.0f / 60.0f) {
             updateInput();
             in.forceBack = (testEscAt >= 0.0f && t >= testEscAt && t < testEscAt + 1.0f / 60.0f);
@@ -450,6 +452,11 @@ void App::run() {
             if (forceFailAt >= 0.0f && t >= forceFailAt && t < forceFailAt + 1.0f / 60.0f)
                 GameDebugForceFail();
             stepSimulation(1.0f / 60.0f);
+            if (stateLog && (int)(t * 2.0f) != logStep) {
+                logStep = (int)(t * 2.0f);
+                printf("[warp %.2f] %s\n", t, GameDebugInfo().c_str());
+                fflush(stdout);
+            }
         }
         in.forceBack = false;
         in.forceKey = 0;

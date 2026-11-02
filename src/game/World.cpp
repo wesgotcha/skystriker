@@ -121,6 +121,15 @@ void DrawWarnMark(float cx, float cy, float size, float alpha) {
     ui::TextC("!", cx, cy - size * 0.62f, (int)(size * 0.92f), WithAlpha(WHITE, alpha), true);
 }
 
+// 巡航：向轨道目标点做指数趋近，而不是直接把 pos 赋成轨道公式值。
+// 直接赋值会在「入场结束」那一帧产生位移跳变（最多 90px），姿态跟着抽一下。
+void OrbitTo(Vector2& pos, Vector2 target, float dt, float rate) {
+    if (dt <= 0.0f) return;
+    float k = 1.0f - std::exp(-rate * dt);
+    pos.x += (target.x - pos.x) * k;
+    pos.y += (target.y - pos.y) * k;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- 初始化
@@ -142,6 +151,7 @@ void World::reset() {
     wave_ = 0;
     wavePhase_ = WP_Banner;
     waveT_ = 0;
+    waveDrop_ = false;
     banner_ = "";
     bannerT_ = 0;
     bannerDur_ = 1.6f;
@@ -150,6 +160,7 @@ void World::reset() {
     stateT_ = 0;
     finished_ = false;
     bossEnter_ = 0;
+    bossEnterDur_ = 2.0f;
     bossPending_ = false;
     bossDelay_ = 0;
     bombFlash_ = 0;
@@ -309,19 +320,40 @@ void World::addScore(int base) {
     score_ += (int)(base * mult);
 }
 
-void World::dropPickup(Vector2 pos) {
-    float r = rng_.f();
-    int kind = 0;
-    if (r < 0.16f) kind = 1;
-    else if (r < 0.30f) kind = 2;
-    else if (r > 0.66f) return;
+void World::spawnPickup(Vector2 pos, int kind) {
     Pickup p;
     p.pos = pos;
-    p.vel = {-90.0f, rng_.range(-40, 40)};
     p.kind = kind;
     p.t = 0;
     p.alive = true;
+    // 出场就朝玩家一侧弹出去：敌机全在右半场，光靠原来的 -90px/s 漂移，
+    // 道具会停在 x≈1300（玩家上限 1150）永远够不到。
+    Vector2 d{player_.x - pos.x, player_.y - pos.y};
+    float l = std::sqrt(d.x * d.x + d.y * d.y);
+    if (l < 1.0f) { d = {-1, 0}; l = 1.0f; }
+    float sp = 470.0f;
+    p.vel = {d.x / l * sp + rng_.range(-30.0f, 30.0f), d.y / l * sp + rng_.range(-40.0f, 40.0f)};
     pickups_.push_back(p);
+}
+
+// 按概率掉落。压到 ~22%，并做保底：本波最后一架必掉，Boss 必掉，
+// 万一整波都没掉（例如 Boss 波的杂兵）就在清波时补一颗。
+void World::dropPickup(Vector2 pos) {
+    int liveMinions = 0;
+    for (const auto& e : enemies_)
+        if (e.alive) liveMinions++;
+    bool must = !waveDrop_ && liveMinions == 0;  // 本波最后一只（Boss 另算，它必掉）
+
+    float r = rng_.f();
+    int kind = -1;
+    if (r < 0.075f) kind = 1;        // 爆弹
+    else if (r < 0.150f) kind = 2;   // 修复
+    else if (r < 0.220f) kind = 0;   // 火力
+    if (kind < 0 && !must) return;
+    if (kind < 0) kind = (rng_.f() < 0.5f) ? 0 : 2;
+
+    waveDrop_ = true;
+    spawnPickup(pos, kind);
 }
 
 // ---------------------------------------------------------------- 生成
@@ -362,10 +394,13 @@ void World::spawnEnemy(int cls, float delay) {
     e.pos = e.spawn;
     pose::Reset(e.pose, pose::kEnemy, cls == EC_B ? -0.05f : -0.08f);
     e.lastY = e.pos.y;
+    e.vyN = 0;
+    e.posJump = false;
     enemies_.push_back(e);
 }
 
 void World::spawnWave(int idx) {
+    waveDrop_ = false;  // 新一波重新计算保底
     // 五波编队：C 小兵打头，B / A 稍后压上
     switch (idx) {
         case 0:
@@ -412,7 +447,10 @@ void World::activateBoss() {
     boss_.fireT = 1.6f;
     pose::Reset(boss_.pose, pose::kEnemy);
     boss_.lastY = boss_.pos.y;
+    boss_.vyN = 0;
+    boss_.posJump = false;
     bossEnter_ = 0;
+    bossEnterDur_ = 2.0f;
     showBanner("IRON FORTRESS", 2.4f);
     audio::play(audio::SfxWarn, 1.0f, 0.85f);
 }
@@ -441,22 +479,26 @@ void World::damagePlayer(float dmg) {
 }
 
 std::string World::debugInfo() const {
-    char b[320];
+    char b[512];
     int pb = 0, eb = 0;
     for (auto& x : bullets_) {
         if (!x.alive) continue;
         if (x.hostile) eb++; else pb++;
     }
+    int pk = 0;
+    for (auto& x : pickups_)
+        if (x.alive) pk++;
     snprintf(b, sizeof b,
              "deathT=%.2f pLoad=%d pSkin=%d state=%d fin=%d wave=%d/%d phase=%d hp=%.0f lives=%d dash=%.2f/%.2f "
-             "player=(%.0f,%.0f) bullets=%d(p%d/e%d) enemies=%d left=%d boss=%d charging=%d score=%d",
+             "player=(%.0f,%.0f) bullets=%d(p%d/e%d) enemies=%d left=%d boss=%d charging=%d score=%d "
+             "bossSt=%d bossPos=(%.0f,%.0f) bossHp=%.2f pickups=%d drop=%d",
              playerDeathT_, (int)assets::players[save::data().craft].loaded,
              (int)assets::players[save::data().craft].skin[save::data().skin].id,
              (int)state_, (int)finished_, std::min(wave_ + 1, kWaveCount), kWaveCount, wavePhase_, hp_, (int)hp_, dashT_, dashCd_, player_.x, player_.y,
              (int)bullets_.size(), pb, eb, (int)enemies_.size(), enemiesLeft(), (int)boss_.alive,
              (int)std::count_if(enemies_.begin(), enemies_.end(),
                                 [](const Enemy& e) { return e.alive && e.st == ES_Charge; }),
-             score_);
+             score_, boss_.st, boss_.pos.x, boss_.pos.y, bossHp01(), pk, (int)waveDrop_);
     return b;
 }
 
@@ -642,17 +684,7 @@ void World::updatePlayer(float dt, bool autopilot) {
             if (boss_.alive) {
                 boss_.hp -= 90;
                 boss_.hitFlash = 0.25f;
-                if (boss_.hp <= 0) {
-                    boss_.alive = false;
-                    score_ += 15000;
-                    kills_++;
-                    shake_ = 1.4f;
-                    flash_ = 0.9f;
-                    audio::play(audio::SfxBigExplode, 1.0f, 0.8f);
-                    for (int k = 0; k < 8; k++)
-                        addExplosion({boss_.pos.x + rng_.range(-200, 200), boss_.pos.y + rng_.range(-180, 180)}, 240,
-                                     Color{255, 150, 90, 255}, 30);
-                }
+                if (boss_.hp <= 0) killBoss();
             }
         }
     }
@@ -694,18 +726,7 @@ void World::updateBullets(float dt) {
                 boss_.hitFlash = 0.09f;
                 addHitSpark(b.pos, Color{255, 220, 150, 255});
                 audio::play(audio::SfxHit, 0.18f, 1.2f);
-                if (boss_.hp <= 0 && boss_.alive) {
-                    boss_.alive = false;
-                    score_ += 15000;
-                    kills_++;
-                    shake_ = 1.4f;
-                    flash_ = 0.9f;
-                    audio::play(audio::SfxBigExplode, 1.0f, 0.8f);
-                    for (int k = 0; k < 8; k++) {
-                        Vector2 p = {boss_.pos.x + rng_.range(-200, 200), boss_.pos.y + rng_.range(-180, 180)};
-                        addExplosion(p, 240, Color{255, 150, 90, 255}, 30);
-                    }
-                }
+                if (boss_.hp <= 0 && boss_.alive) killBoss();
             }
         }
     }
@@ -760,7 +781,50 @@ void World::ramExplode(Enemy& e) {
     dropPickup(e.pos);
 }
 
+void World::killBoss() {
+    boss_.alive = false;
+    boss_.st = ES_Dead;
+    score_ += 15000;
+    kills_++;
+    shake_ = 1.4f;
+    flash_ = 0.9f;
+    audio::play(audio::SfxBigExplode, 1.0f, 0.8f);
+    for (int k = 0; k < 8; k++) {
+        Vector2 p = {boss_.pos.x + rng_.range(-200, 200), boss_.pos.y + rng_.range(-180, 180)};
+        addExplosion(p, 240, Color{255, 150, 90, 255}, 30);
+    }
+    // Boss 必掉两颗（火力 + 爆弹）。位置钳进画面：它可能刚好死在出画途中，
+    // 掉落物丢在 x=-800 就直接被剔除，玩家白打一场。
+    Vector2 drop{clampf(boss_.pos.x, 280.0f, 1480.0f), clampf(boss_.pos.y, 240.0f, 900.0f)};
+    spawnPickup({drop.x - 60, drop.y - 90}, 0);
+    spawnPickup({drop.x - 60, drop.y + 90}, 1);
+    waveDrop_ = true;
+}
+
 // ---------------------------------------------------------------- 敌机
+// 瞬移换场（冲空后从右侧重新进场）。位置可以瞬移，姿态不能跟着瞬移：
+// 位移差会被当成速度，一帧就能把倾角顶到极限，看起来就是"突然摆正"。
+void World::placeEnemy(Enemy& e, Vector2 p) {
+    e.pos = p;
+    e.lastY = p.y;
+    e.posJump = true;
+}
+
+// 姿态 = 轨迹的结果。这里对垂直速度先做一次平滑再喂给 pose，
+// 避免入场/回场/起冲那几帧的速度突变把机体甩一下。
+void World::updateEnemyPose(Enemy& e, float dt) {
+    if (dt <= 0.0001f) return;
+    float vy = (e.pos.y - e.lastY) / dt;
+    float target = clampf(-vy / 320.0f, -1.0f, 1.0f);
+    if (e.posJump) {  // 这一帧是瞬移，位移不是真实速度
+        target = 0.0f;
+        e.posJump = false;
+    }
+    e.vyN += (target - e.vyN) * (1.0f - std::exp(-dt * 9.0f));
+    pose::Update(e.pose, pose::kEnemy, e.vyN, dt);
+    e.lastY = e.pos.y;
+}
+
 void World::enemyShoot(const Enemy& e) {
     Vector2 aim{player_.x - e.pos.x, player_.y - e.pos.y};
     float base = std::atan2(aim.y, aim.x);
@@ -803,8 +867,9 @@ void World::updateC(Enemy& e, float dt) {
         }
         case ES_Patrol: {
             // 在右半场里绕锚点游走，绝不追着玩家跑
-            e.pos.x = e.home.x + std::sin(e.t * 0.62f + e.phase) * 58.0f;
-            e.pos.y = e.home.y + std::sin(e.t * 1.05f + e.phase * 1.7f) * 92.0f;
+            Vector2 orbit{e.home.x + std::sin(e.t * 0.62f + e.phase) * 58.0f,
+                          e.home.y + std::sin(e.t * 1.05f + e.phase * 1.7f) * 92.0f};
+            OrbitTo(e.pos, orbit, dt, 4.5f);
             e.fireT -= dt;
             if (e.fireT <= 0) {
                 enemyShoot(e);
@@ -830,8 +895,9 @@ void World::updateB(Enemy& e, float dt) {
             break;
         }
         case ES_Patrol: {
-            e.pos.x = e.home.x + std::sin(e.t * 0.42f + e.phase) * 32.0f;
-            e.pos.y = e.home.y + std::sin(e.t * 0.74f + e.phase) * 76.0f;
+            Vector2 orbit{e.home.x + std::sin(e.t * 0.42f + e.phase) * 32.0f,
+                          e.home.y + std::sin(e.t * 0.74f + e.phase) * 76.0f};
+            OrbitTo(e.pos, orbit, dt, 3.6f);
 
             if (e.tell > 0) {
                 e.tell -= dt;
@@ -877,8 +943,9 @@ void World::updateA(Enemy& e, float dt) {
             break;
         }
         case ES_Patrol: {
-            e.pos.x = e.home.x + std::sin(e.t * 0.55f + e.phase) * 52.0f;
-            e.pos.y = e.home.y + std::sin(e.t * 0.90f + e.phase * 1.3f) * 84.0f;
+            Vector2 orbit{e.home.x + std::sin(e.t * 0.55f + e.phase) * 52.0f,
+                          e.home.y + std::sin(e.t * 0.90f + e.phase * 1.3f) * 84.0f};
+            OrbitTo(e.pos, orbit, dt, 4.2f);
             e.specialT -= dt;
             if (e.specialT <= 0 && player_.x < e.pos.x - 260.0f) beginCharge(e);
             break;
@@ -908,10 +975,11 @@ void World::updateA(Enemy& e, float dt) {
                 return;
             }
             if (e.pos.x < -320 || e.pos.y < -340 || e.pos.y > VH + 340 || e.stateT > 2.6f) {
-                // 冲空了：从右侧重新进场，回到巡航位（不消失，波次才能被清空）
-                e.spawn = {VW + 280, clampf(e.home.y, 300, 800)};
+                // 冲空了：不按原路折返（那样会背朝玩家倒着飞回来），
+                // 让它继续往画面外飞掉，然后从右侧重新进场（不消失，波次才能被清空）
                 e.home = {rng_.range(1310.0f, 1650.0f), rng_.range(290.0f, 800.0f)};
-                e.pos = e.spawn;
+                e.spawn = {VW + 280.0f, e.home.y};
+                placeEnemy(e, e.spawn);
                 e.vel = {0, 0};
                 e.st = ES_Enter;
                 e.stateT = 0;
@@ -947,13 +1015,8 @@ void World::updateEnemies(float dt) {
         }
         if (!e.alive) continue;
 
-        // 姿态：与玩家共用同一套公式，倾角跟着轨迹起伏
-        if (dt > 0.0001f) {
-            float vy = (e.pos.y - e.lastY) / dt;
-            float vyN = clampf(-vy / 300.0f, -1.0f, 1.0f);
-            pose::Update(e.pose, pose::kEnemy, vyN, dt);
-        }
-        e.lastY = e.pos.y;
+        // 姿态：与玩家共用同一套公式，倾角跟着轨迹起伏（内部做了速度平滑）
+        updateEnemyPose(e, dt);
     }
     if (enemies_.size() > 40)
         enemies_.erase(std::remove_if(enemies_.begin(), enemies_.end(), [](const Enemy& e) { return !e.alive; }),
@@ -1016,10 +1079,11 @@ void World::updateBoss(float dt) {
 
     switch (boss_.st) {
         case ES_Enter: {
-            float k = easeOutCubic(clampf(boss_.stateT / 2.0f, 0, 1));
+            float dur = std::max(bossEnterDur_, 0.2f);
+            float k = easeOutCubic(clampf(boss_.stateT / dur, 0, 1));
             boss_.pos.x = lerpf(boss_.spawn.x, boss_.home.x, k);
             boss_.pos.y = lerpf(boss_.spawn.y, boss_.home.y, k);
-            if (boss_.stateT >= 2.0f) {
+            if (boss_.stateT >= dur) {
                 boss_.st = ES_Patrol;
                 boss_.stateT = 0;
                 boss_.fireT = 1.4f;
@@ -1043,26 +1107,22 @@ void World::updateBoss(float dt) {
             float dx = boss_.pos.x - player_.x, dy = boss_.pos.y - player_.y;
             if (dx * dx + dy * dy < 230.0f * 230.0f && playerDeathT_ <= 0) damagePlayer(kDmgRam);
             if (boss_.pos.x < -460 || boss_.pos.y < -460 || boss_.pos.y > VH + 460 || boss_.stateT > 2.8f) {
-                boss_.spawn = boss_.pos;
-                boss_.st = ES_Return;
+                // 不原路折返（那会让这个大家伙背朝玩家倒着飞回来）：
+                // 冲撞就是一路冲出画面，再从右侧重新压进来，和冲锋机一个路子。
+                boss_.spawn = {VW + 520.0f, boss_.home.y};
+                placeEnemy(boss_, boss_.spawn);
+                boss_.vel = {0, 0};
+                boss_.st = ES_Enter;
                 boss_.stateT = 0;
-            }
-            break;
-        }
-        case ES_Return: {
-            float k = easeOutCubic(clampf(boss_.stateT / 1.5f, 0, 1));
-            boss_.pos.x = lerpf(boss_.spawn.x, boss_.home.x, k);
-            boss_.pos.y = lerpf(boss_.spawn.y, boss_.home.y, k);
-            if (boss_.stateT >= 1.5f) {
-                boss_.st = ES_Patrol;
-                boss_.stateT = 0;
-                boss_.fireT = 0.9f;
+                bossEnterDur_ = 1.35f;
+                boss_.fireT = 1.2f;  // 回来先喘一口，别一进场就压枪
             }
             break;
         }
         default: {
-            boss_.pos.y = boss_.home.y + std::sin(boss_.t * 0.70f) * 92.0f;
-            boss_.pos.x = boss_.home.x + std::sin(boss_.t * 0.45f) * 36.0f;
+            Vector2 orbit{boss_.home.x + std::sin(boss_.t * 0.45f) * 36.0f,
+                          boss_.home.y + std::sin(boss_.t * 0.70f) * 92.0f};
+            OrbitTo(boss_.pos, orbit, dt, 2.8f);
 
             if (boss_.tell > 0) {
                 boss_.tell -= dt;
@@ -1086,11 +1146,7 @@ void World::updateBoss(float dt) {
         }
     }
 
-    if (dt > 0.0001f) {
-        float vy = (boss_.pos.y - boss_.lastY) / dt;
-        pose::Update(boss_.pose, pose::kEnemy, clampf(-vy / 300.0f, -1.0f, 1.0f), dt);
-    }
-    boss_.lastY = boss_.pos.y;
+    updateEnemyPose(boss_, dt);
 }
 
 // ---------------------------------------------------------------- 粒子/拾取
@@ -1120,12 +1176,36 @@ void World::updatePickups(float dt) {
     for (auto& p : pickups_) {
         if (!p.alive) continue;
         p.t += dt;
+
+        // 出场先按初速弹向玩家，0.22s 后打开弱磁吸：
+        // 敌机全在右半场、玩家上限 x=1150，不吸的话道具永远停在够不到的地方。
+        bool magnetOn = (p.t > 0.22f) && playerDeathT_ <= 0 && state_ == WorldState::Playing;
+        if (magnetOn) {
+            Vector2 d{player_.x - p.pos.x, player_.y - p.pos.y};
+            float l = std::sqrt(d.x * d.x + d.y * d.y);
+            if (l > 1.0f) {
+                const float acc = 380.0f;
+                p.vel.x += d.x / l * acc * dt;
+                p.vel.y += d.y / l * acc * dt;
+            }
+            float sp = std::sqrt(p.vel.x * p.vel.x + p.vel.y * p.vel.y);
+            const float spMax = 560.0f;
+            if (sp > spMax) {
+                p.vel.x *= spMax / sp;
+                p.vel.y *= spMax / sp;
+            }
+            p.vel.x *= (1.0f - 0.9f * dt);
+            p.vel.y *= (1.0f - 0.9f * dt);
+        } else {
+            p.vel.x *= (1.0f - 2.0f * dt);
+            p.vel.y *= (1.0f - 2.0f * dt);
+            p.pos.y += std::sin(p.t * 3.0f) * 18.0f * dt;
+        }
+
         p.pos.x += p.vel.x * dt;
         p.pos.y += p.vel.y * dt;
-        p.vel.x *= (1.0f - 1.2f * dt);
-        p.vel.y *= (1.0f - 1.2f * dt);
-        p.pos.y += std::sin(p.t * 3.0f) * 18.0f * dt;
-        if (p.pos.x < -80 || p.t > 9.0f) p.alive = false;
+
+        if (p.pos.x < -120 || p.t > 9.0f) p.alive = false;
         if (playerDeathT_ > 0 || state_ != WorldState::Playing) continue;
         float dx = p.pos.x - player_.x, dy = p.pos.y - player_.y;
         if (dx * dx + dy * dy < 78 * 78) {
@@ -1167,6 +1247,8 @@ void World::updateWave(float dt) {
         case WP_Fight:
             // 关键规则：必须打完本波所有敌人（含 Boss）才允许进入下一波
             if (!bossPending_ && !boss_.alive && enemiesAllDead()) {
+                // 兜底：万一整波一颗都没掉（例如全靠冲撞撞死），清场时补一颗
+                if (!waveDrop_) spawnPickup({1060.0f, clampf(player_.y, 320.0f, VH - 160.0f)}, 0);
                 wavePhase_ = WP_Gap;
                 waveT_ = 2.0f;
                 showBanner("WAVE CLEAR", 1.5f);
