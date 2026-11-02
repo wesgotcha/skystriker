@@ -4,6 +4,7 @@
 #include "Backdrop.hpp"
 #include "Common.hpp"
 #include "Match.hpp"
+#include "Replay.hpp"
 
 #include <functional>
 #include <map>
@@ -89,6 +90,25 @@ public:
     void draw() override;
     bool freezeWorld() const override { return true; }
     const char* debugName() const override { return "records"; }
+};
+
+// 作战复盘：replays/ 里的每局记录，按分数/时长/时间排序，点一行就能重看那一局
+class HistoryOverlay : public Screen {
+public:
+    void enter() override;
+    void update(float dt) override;
+    void draw() override;
+    bool freezeWorld() const override { return true; }
+    const char* debugName() const override { return "history"; }
+
+private:
+    void sortItems();
+    void play(int i);
+    std::vector<replay::Meta> items_;
+    int sort_ = 0;  // 0 最新 / 1 得分 / 2 时长
+    int sel_ = 0;
+    int top_ = 0;
+    float t_ = 0;
 };
 
 // ---------------------------------------------------------------- TITLE
@@ -206,6 +226,7 @@ private:
 class GameScreen : public Screen {
 public:
     void enter() override;
+    void leave() override;
     void update(float dt) override;
     void drawWorld() override;
     void draw3D() override;
@@ -270,6 +291,38 @@ private:
     float t_ = 0;
     int   focus_ = 0;
     bool  newRecord_ = false;
+    bool  hasReplay_ = false;
+};
+
+// 复盘播放：拿录像里的输入把那一局重跑一遍
+class ReplayScreen : public Screen {
+public:
+    void enter() override;
+    void leave() override;
+    void update(float dt) override;
+    void drawWorld() override;
+    void draw3D() override;
+    void draw() override;
+    const char* debugName() const override { return "replay"; }
+
+private:
+    void stepFrame();
+    void restart();
+    void finishAndBack();
+
+    World        world_;
+    replay::Rec  rec_;
+    size_t       idx_ = 0;
+    int          speedIdx_ = 1;   // 0.5x / 1x / 2x / 4x
+    float        acc_ = 0;
+    float        played_ = 0;
+    bool         paused_ = false;
+    bool         ended_ = false;
+    bool         godBak_ = false;
+    int          craftBak_ = 0;
+    int          skinBak_ = 0;
+    bool         logged_ = false;
+    float        t_ = 0;
 };
 
 // 全局战斗入口（Game.cpp 提供）

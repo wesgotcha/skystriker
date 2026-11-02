@@ -176,6 +176,20 @@ struct RunSetup {
     bool     online = false;
 };
 
+// 一帧的玩家输入（已经解过键位/对角线归一化）。
+//
+// 实时游玩时由 updatePlayer() 从 app().in 里解出来，复盘时由 ReplayScreen
+// 按录像逐帧灌进来 —— 两条路走的是同一段逻辑，录像才能演回原样。
+// 触发类（bomb / dash）记的是"这一帧按下了"，不是"按住"。
+struct WorldInput {
+    float dirX = 0, dirY = 0;
+    float mouseX = 0, mouseY = 0;
+    bool  mouseSteer = false;
+    bool  fire = false;
+    bool  bomb = false;
+    bool  dash = false;
+};
+
 enum class WorldState { Playing, Cleared, Failed };
 
 // 波次阶段
@@ -226,6 +240,12 @@ public:
     // 供暂停菜单使用
     void killPlayerNow();
     std::string debugInfo() const;
+
+    // 复盘通道：录像帧灌进来之后，updatePlayer 不再读键盘/鼠标
+    void setScriptedInput(const WorldInput& wi) { script_ = wi; scripted_ = true; }
+    void clearScriptedInput() { scripted_ = false; }
+    const WorldInput& lastInput() const { return lastInput_; }  // 本帧实际吃到的输入（录像用）
+    bool scripted() const { return scripted_; }
 
 private:
     void updatePlayer(int slot, float dt, const Ctrl& c, bool autopilot);
@@ -333,6 +353,10 @@ private:
     Rng     rng_;
     float   autopilotT_ = 0;
     Vector2 autoTarget_{500, 700};
+
+    WorldInput script_;      // 复盘灌进来的本帧输入
+    WorldInput lastInput_;   // 本帧实际输入（录像直接抄它，和逻辑天然一致）
+    bool       scripted_ = false;
 };
 
 }  // namespace sky
