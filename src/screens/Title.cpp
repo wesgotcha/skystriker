@@ -171,8 +171,8 @@ void TitleScreen::draw() {
             ui::Triangle(tx + ui::TextW(kMenu[i], 40, true) * 0.5f + 46 - float_ * 0.3f, y + 26, 20, -1,
                          F(WithAlpha(pal::kCyan, 0.9f)));
         }
-        ui::TextShadow(kMenu[i], tx - ui::TextW(kMenu[i], 40, sel) * 0.5f, y, 40, F(c),
-                       F(WithAlpha(BLACK, 0.6f)), sel);
+        ui::TextOutline(kMenu[i], tx - ui::TextW(kMenu[i], 40, sel) * 0.5f, y, 40, F(c),
+                        F(WithAlpha(BLACK, 0.6f)), sel);
     }
 
     // 底部提示
@@ -186,10 +186,27 @@ ConfirmOverlay::ConfirmOverlay(std::string title, std::string body, std::functio
     : title_(std::move(title)), body_(std::move(body)), yes_(std::move(yes)), no_(std::move(no)),
       onYes_(std::move(onYes)) {}
 
+namespace {
+Rectangle ConfirmPanelRect() { return {VW * 0.5f - 280, VH * 0.5f - 150, 560, 300}; }
+// 两个按钮的矩形只写一份：update() 的悬停命中和 draw() 的绘制必须完全一致，
+// 否则会出现"指针放在按钮上但焦点不跟着走"。
+Rectangle ConfirmBtnRect(int i) {
+    Rectangle r = ConfirmPanelRect();
+    return {r.x + (i == 0 ? 76.0f : 304.0f), r.y + 200, 180, 66};
+}
+}  // namespace
+
 void ConfirmOverlay::update(float dt) {
     t_ += dt;
     if (app().in.navLeft()) { focus_ = 0; audio::play(audio::SfxUiMove, 0.5f); }
     if (app().in.navRight()) { focus_ = 1; audio::play(audio::SfxUiMove, 0.5f); }
+    // 鼠标悬停直接接管焦点（和暂停菜单、阵亡界面的行为保持一致）
+    for (int i = 0; i < 2; i++) {
+        if (ui::Hover(ConfirmBtnRect(i)) && focus_ != i) {
+            focus_ = i;
+            audio::play(audio::SfxUiMove, 0.45f);
+        }
+    }
     if (app().in.back()) {
         app().popOverlay();
         return;
@@ -208,14 +225,14 @@ void ConfirmOverlay::update(float dt) {
 
 void ConfirmOverlay::draw() {
     ui::Dim(0.62f, Color{4, 8, 14, 255});
-    Rectangle r{VW * 0.5f - 280, VH * 0.5f - 150, 560, 300};
+    Rectangle r = ConfirmPanelRect();
     // 弹窗用不透明底：半透明面板会把背后的动态画面透出来，边框跟着一起"呼吸"
     ui::Panel(r, Color{6, 12, 22, 255}, WithAlpha(pal::kCyan, 0.7f), 12, 2);
     ui::Frame(r, WithAlpha(pal::kCyan, 0.35f), 12);
     ui::TextC(title_, VW * 0.5f, r.y + 52, 36, pal::kText, true);
     ui::TextC(body_, VW * 0.5f, r.y + 126, 24, WithAlpha(pal::kDim, 0.95f));
-    Rectangle b1{r.x + 76, r.y + 200, 180, 66};
-    Rectangle b2{r.x + 304, r.y + 200, 180, 66};
+    Rectangle b1 = ConfirmBtnRect(0);
+    Rectangle b2 = ConfirmBtnRect(1);
     if (ui::Button(b1, no_, focus_ == 0, true, 26)) { app().popOverlay(); }
     if (ui::Button(b2, yes_, focus_ == 1, true, 26)) {
         auto cb = onYes_;

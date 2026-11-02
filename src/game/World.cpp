@@ -1502,13 +1502,13 @@ void World::drawHud() {
     // ---- 分数
     ui::Text("SCORE", 48, 30, 22, WithAlpha(pal::kCyan, 0.95f), true);
     snprintf(buf, sizeof buf, "%07d", score_);
-    ui::TextShadow(buf, 46, 58, 52, pal::kText, WithAlpha(BLACK, 0.55f), true);
+    ui::TextOutline(buf, 46, 58, 52, pal::kText, WithAlpha(BLACK, 0.55f), true);
     snprintf(buf, sizeof buf, "HI %07d", std::max(save::data().hiScore, score_));
-    ui::TextShadow(buf, 48, 122, 22, WithAlpha(pal::kDim, 0.95f), WithAlpha(BLACK, 0.5f));
+    ui::TextOutline(buf, 48, 122, 22, WithAlpha(pal::kDim, 0.95f), WithAlpha(BLACK, 0.5f));
     if (combo_ > 1) {
         float pop = comboT_ > 2.3f ? 1.0f + (comboT_ - 2.3f) * 0.9f : 1.0f;
         snprintf(buf, sizeof buf, "COMBO x%d", combo_);
-        ui::TextShadow(buf, 48, 160, (int)(26 * pop), pal::kGold, WithAlpha(BLACK, 0.5f), true);
+        ui::TextOutline(buf, 48, 160, (int)(26 * pop), pal::kGold, WithAlpha(BLACK, 0.5f), true);
     }
 
     // ---- 装甲（玩家血量）
@@ -1521,7 +1521,7 @@ void World::drawHud() {
     Rectangle hudPanel{bx - 26, 10, barW + 52, 182};
     ui::Panel(hudPanel, WithAlpha(pal::kPanelBg, 0.55f), WithAlpha(pal::kCyan, 0.22f), 12, 1.5f);
 
-    ui::TextShadow("装甲", bx, 24, 20, WithAlpha(pal::kText, 0.85f), WithAlpha(BLACK, 0.6f));
+    ui::TextOutline("装甲", bx, 24, 20, WithAlpha(pal::kText, 0.85f), WithAlpha(BLACK, 0.6f));
     snprintf(buf, sizeof buf, "%d", (int)std::ceil(hp_));
     ui::TextR(buf, rx, 20, 26, WithAlpha(hpCol, 0.95f), true);
     DrawRectangle((int)bx - 3, (int)54 - 3, (int)barW + 6, 26, WithAlpha(BLACK, 0.55f));
@@ -1529,7 +1529,7 @@ void World::drawHud() {
     DrawRectangle((int)bx, (int)54, (int)(barW * ratio), 4, WithAlpha(WHITE, 0.35f));
 
     // ---- 爆弹
-    ui::TextShadow("爆弹", bx, 90, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.6f));
+    ui::TextOutline("爆弹", bx, 90, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.6f));
     for (int i = 0; i < bombs_; i++) {
         float cx = rx - 12 - i * 30, cy = 102;
         DrawCircle((int)cx, (int)(cy + 4), 10, pal::kGold);
@@ -1539,7 +1539,7 @@ void World::drawHud() {
 
     // ---- 闪身冷却
     float dr = dashReady01();
-    ui::TextShadow("闪避", bx, 128, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.6f));
+    ui::TextOutline("闪避", bx, 128, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.6f));
     if (dr >= 0.999f) {
         float p = ui::Pulse(2.4f);
         ui::TextR("就绪", rx, 128, 18, WithAlpha(pal::kCyan, 0.55f + 0.45f * p), true);
@@ -1549,16 +1549,16 @@ void World::drawHud() {
 
     // ---- 剩余敌机（左下）
     int left = enemiesLeft();
-    ui::TextShadow("敌机", 48, VH - 100, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.65f));
+    ui::TextOutline("敌机", 48, VH - 100, 20, WithAlpha(pal::kText, 0.8f), WithAlpha(BLACK, 0.65f));
     snprintf(buf, sizeof buf, "%02d", left);
-    ui::TextShadow(buf, 46, VH - 76, 44, left > 0 ? pal::kText : WithAlpha(pal::kCyan, 0.9f), WithAlpha(BLACK, 0.6f),
+    ui::TextOutline(buf, 46, VH - 76, 44, left > 0 ? pal::kText : WithAlpha(pal::kCyan, 0.9f), WithAlpha(BLACK, 0.6f),
                    true);
 
     // ---- 波次进度（右下，5 格）
     float bw = 44, gap = 8;
     float totalW = kWaveCount * (bw + gap) - gap;
     float px = VW - 48 - totalW, py = VH - 76;
-    ui::TextShadow("进度", px - 22 - ui::TextW("进度", 20), py + 4, 20, WithAlpha(pal::kText, 0.75f),
+    ui::TextOutline("进度", px - 22 - ui::TextW("进度", 20), py + 4, 20, WithAlpha(pal::kText, 0.75f),
                    WithAlpha(BLACK, 0.6f));
     for (int i = 0; i < kWaveCount; i++) {
         bool done = (i < wave_) || (i == wave_ && wavePhase_ == WP_Gap);

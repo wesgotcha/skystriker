@@ -9,12 +9,14 @@ float     K();                    // 画布像素 / 逻辑像素
 float     Px(float v);            // 单个坐标对齐
 Rectangle Snap(Rectangle r);      // 四边对齐
 
-// 文字（左上锚点 / 水平居中 / 右对齐）
+// 文字（左上锚点 / 水平居中 / 右对齐）。字号统一乘 kFontScale，见 Ui.cpp
 void  Text(const std::string& s, float x, float y, int size, Color c, bool bold = false);
 void  TextC(const std::string& s, float cx, float y, int size, Color c, bool bold = false);
 void  TextR(const std::string& s, float rx, float y, int size, Color c, bool bold = false);
 float TextW(const std::string& s, int size, bool bold = false);
-void  TextShadow(const std::string& s, float x, float y, int size, Color c, Color shadow, bool bold = false);
+// 描边字：先沿 8 个方向画一圈 outline，再压上正文（亮背景上也能读清）
+void  TextOutline(const std::string& s, float x, float y, int size, Color c, Color outline,
+                  bool bold = false);
 
 // 切角矩形（四角各切 c 像素）。描边画成等宽环，拐角不会叠加、不会缺口。
 void Panel(Rectangle r, Color fill, Color stroke, float chamfer = 8.0f, float thickness = 2.0f);

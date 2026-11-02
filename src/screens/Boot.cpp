@@ -11,6 +11,8 @@ namespace sky {
 
 void BootScreen::enter() {
     save::load();
+    // 旧存档可能存着已下架的配色（Green），统一折回合法值，免得战斗里还在用
+    save::data().skin = assets::normalizeSkin(save::data().skin);
     app().volMaster = save::data().volMaster;
     app().volMusic = save::data().volMusic;
     app().volSfx = save::data().volSfx;

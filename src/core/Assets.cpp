@@ -9,6 +9,14 @@ namespace sky::assets {
 
 const char* kSkinName[SKIN_COUNT] = {"BLUE", "GREEN", "ORANGE", "PURPLE", "RED"};
 
+const int kSkinSlots[kSkinSlotCount] = {SKIN_BLUE, SKIN_ORANGE, SKIN_PURPLE};
+
+int normalizeSkin(int skin) {
+    for (int i = 0; i < kSkinSlotCount; i++)
+        if (kSkinSlots[i] == skin) return skin;
+    return kSkinSlots[0];
+}
+
 Texture2D logoTex{};
 Texture2D oceanSky{}, oceanSea{}, oceanCloudFar{}, oceanCloudNear{}, islandA{}, islandB{}, carrierSea{};
 Texture2D duskSky{}, duskCloudFar{}, duskCloudNear{}, carrierDusk{};

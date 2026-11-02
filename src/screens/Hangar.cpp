@@ -12,7 +12,19 @@
 namespace sky {
 
 static const char* kStatName[5] = {"速度", "火力", "装甲", "机动", "射速"};
-static const char* kSkinTag[4] = {"BLUE", "GREEN", "ORANGE", "PURPLE"};
+
+// 机库提供的配色来自 Assets（Green 是"绿+黄"混色，已下架）。
+// 色卡槽位 ↔ 真实皮肤索引的换算只在这里做，save 里存的始终是真实索引。
+using assets::kSkinSlotCount;
+using assets::kSkinSlots;
+static const char* kSkinTag[kSkinSlotCount] = {"BLUE", "ORANGE", "PURPLE"};
+
+static int SkinSlotOf(int skin) {
+    skin = assets::normalizeSkin(skin);
+    for (int i = 0; i < kSkinSlotCount; i++)
+        if (kSkinSlots[i] == skin) return i;
+    return 0;
+}
 
 // 机库属性面板与配色色卡的统一布局：绘制和鼠标命中必须用同一份坐标
 static const Rectangle kHangarPanel{90, 168, 580, 574};
@@ -25,9 +37,9 @@ static Rectangle SkinSwatchRect(int i) {
 
 static Color SkinColor(int i) {
     switch (i) {
-        case 0: return Color{70, 120, 220, 255};
-        case 1: return Color{70, 190, 120, 255};
-        case 2: return Color{240, 150, 60, 255};
+        case assets::SKIN_BLUE: return Color{70, 120, 220, 255};
+        case assets::SKIN_GREEN: return Color{70, 190, 120, 255};
+        case assets::SKIN_ORANGE: return Color{240, 150, 60, 255};
         default: return Color{160, 100, 220, 255};
     }
 }
@@ -41,7 +53,10 @@ HangarScreen::HangarScreen(Mode m) : mode_(m) {}
 
 void HangarScreen::enter() {
     craft_ = clampi(save::data().craft, 0, 5);
-    skin_ = clampi(save::data().skin, 0, 3);
+    // skin_ 存的是"色卡槽位"，save 里存的是真正的皮肤索引：旧存档可能是已下架的
+    // 配色，这里统一折算回槽位，并把存档写回合法值。
+    skin_ = SkinSlotOf(clampi(save::data().skin, 0, assets::SKIN_COUNT - 1));
+    save::data().skin = kSkinSlots[skin_];
     yaw_ = 60;
     t_ = 0;
     for (auto& a : appear_) a = 0;
@@ -113,8 +128,8 @@ void HangarScreen::update(float dt) {
 
     // 换色
     if (in.pressed(KEY_C) || in.pressed(KEY_TAB)) {
-        skin_ = (skin_ + 1) % 4;
-        save::data().skin = skin_;
+        skin_ = (skin_ + 1) % kSkinSlotCount;
+        save::data().skin = kSkinSlots[skin_];
         save::save();
         audio::play(audio::SfxUiMove, 0.6f);
     }
@@ -134,10 +149,10 @@ void HangarScreen::update(float dt) {
         }
     }
     // 色卡鼠标（坐标与 drawStatPanel 里的绘制完全一致）
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < kSkinSlotCount; i++) {
         if (ui::Hover(SkinSwatchRect(i)) && in.lmbPressed) {
             skin_ = i;
-            save::data().skin = skin_;
+            save::data().skin = kSkinSlots[skin_];
             save::save();
             audio::play(audio::SfxUiMove, 0.6f);
         }
@@ -188,7 +203,7 @@ void HangarScreen::draw3D() {
     // 复用同一套姿态系统：机库里"选一个角度"即可，不再单独写死旋转
     float showcaseRoll = -0.14f + std::sin(t_ * 0.5f) * 0.05f;
     pose::Pose p = pose::FromRoll(showcaseRoll);
-    assets::drawCraft(c, 1338, 658 + bob, skin_, p, 620.0f, WHITE, 1);
+    assets::drawCraft(c, 1338, 658 + bob, kSkinSlots[skin_], p, 620.0f, WHITE, 1);
     cameraRig().end();
 }
 
@@ -217,10 +232,10 @@ void HangarScreen::drawStatPanel() {
     // 换色
     ui::Rect({r.x + 30, r.y + 452, r.width - 60, 1}, WithAlpha(WHITE, 0.08f));
     ui::Text("换色", r.x + 30, r.y + 484, 22, WithAlpha(pal::kDim, 0.9f));
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < kSkinSlotCount; i++) {
         Rectangle sr = SkinSwatchRect(i);
         bool hov = ui::Hover(sr);
-        Color col = SkinColor(i);
+        Color col = SkinColor(kSkinSlots[i]);
         ui::Rect(sr, WithAlpha(col, hov ? 1.0f : 0.86f));
         ui::Rect({sr.x, sr.y, sr.width, 6}, WithAlpha(WHITE, 0.16f));
         if (skin_ == i) {

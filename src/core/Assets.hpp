@@ -11,6 +11,13 @@ namespace sky::assets {
 enum SkinIndex { SKIN_BLUE = 0, SKIN_GREEN, SKIN_ORANGE, SKIN_PURPLE, SKIN_RED, SKIN_COUNT };
 extern const char* kSkinName[SKIN_COUNT];
 
+// 机库开放的配色（顺序即色卡顺序）。Green 的贴图是"绿+黄"混色，上机后像两套配色
+// 拼在一起，已下架；其余三套都是单色明确的。
+constexpr int kSkinSlotCount = 3;
+extern const int kSkinSlots[kSkinSlotCount];
+// 把任意（可能来自旧存档的）皮肤索引折回开放配色，非法值回落到第一套
+int normalizeSkin(int skin);
+
 struct Craft {
     std::string id;      // 英文机型名
     std::string role;    // 中文定位（均衡型 / 突击型 …）

@@ -5,6 +5,12 @@
 
 namespace sky::ui {
 
+// 全局字号系数：所有界面文字统一按这个比例微调，不用逐个改调用点。
+// 改这一个数就能整体放大/缩小（布局锚点不变，文字向下长）。
+static constexpr float kFontScale = 1.10f;
+
+static int Scaled(int size) { return (int)std::lround((float)size * kFontScale); }
+
 static float Spacing(int size) { return std::round(size * 0.03f); }
 
 // ---------------------------------------------------------------- 像素网格
@@ -32,8 +38,9 @@ static float ThickPx(float th) {
 
 // ---------------------------------------------------------------- 文字
 void Text(const std::string& s, float x, float y, int size, Color c, bool bold) {
-    Font& f = bold ? assets::title(size) : assets::body(size);
-    DrawTextEx(f, s.c_str(), {Px(x), Px(y)}, (float)size, Spacing(size), c);
+    int sz = Scaled(size);
+    Font& f = bold ? assets::title(sz) : assets::body(sz);
+    DrawTextEx(f, s.c_str(), {Px(x), Px(y)}, (float)sz, Spacing(sz), c);
 }
 
 void TextC(const std::string& s, float cx, float y, int size, Color c, bool bold) {
@@ -47,12 +54,25 @@ void TextR(const std::string& s, float rx, float y, int size, Color c, bool bold
 }
 
 float TextW(const std::string& s, int size, bool bold) {
-    Font& f = bold ? assets::title(size) : assets::body(size);
-    return MeasureTextEx(f, s.c_str(), (float)size, Spacing(size)).x;
+    int sz = Scaled(size);
+    Font& f = bold ? assets::title(sz) : assets::body(sz);
+    return MeasureTextEx(f, s.c_str(), (float)sz, Spacing(sz)).x;
 }
 
-void TextShadow(const std::string& s, float x, float y, int size, Color c, Color shadow, bool bold) {
-    Text(s, x + 2, y + 3, size, shadow, bold);
+void TextOutline(const std::string& s, float x, float y, int size, Color c, Color outline, bool bold) {
+    // 8 方向描边（4 正 + 4 斜）。原来是"右下偏移 2,3 的硬阴影"，在亮云上会糊成一块；
+    // 描边能把字和背景彻底分开，斜向用 0.72 倍位移，视觉上粗细更均匀。
+    int sz = Scaled(size);
+    float t = std::max(1.0f, std::round(sz * 0.055f));
+    // 描边必须够实：半透明的"影子"在亮云上等于没画，这里给一个下限
+    outline.a = (unsigned char)std::max<int>(outline.a, 200);
+    if (outline.a > 0) {
+        for (int i = 0; i < 8; i++) {
+            float a = i * (PI / 4.0f);
+            float k = (i & 1) ? 0.72f : 1.0f;  // 斜向缩短一点，避免四个角堆出毛刺
+            Text(s, x + std::cos(a) * t * k, y + std::sin(a) * t * k, size, outline, bold);
+        }
+    }
     Text(s, x, y, size, c, bold);
 }
 
@@ -142,7 +162,18 @@ void Star(float cx, float cy, float r, Color c, bool filled) {
     if (filled) {
         for (int i = 1; i < 9; i++) DrawTriangle(pts[0], pts[i], pts[i + 1], c);
     } else {
-        for (int i = 0; i < 10; i++) DrawLineEx(pts[i], pts[(i + 1) % 10], 2.0f, c);
+        // 空心星用"细长四边形"描边。原本是 DrawLineEx，但它在三角带路径上会掉亮度
+        // （见 World.cpp 里拼粗线的注释），alpha 低的时候整颗星直接看不见。
+        const float t = 1.6f;
+        for (int i = 0; i < 10; i++) {
+            Vector2 a = pts[i], b = pts[(i + 1) % 10];
+            float dx = b.x - a.x, dy = b.y - a.y;
+            float len = std::sqrt(dx * dx + dy * dy);
+            if (len < 1e-3f) continue;
+            Vector2 n{-dy / len * t, dx / len * t};
+            DrawTriangle({a.x + n.x, a.y + n.y}, {b.x + n.x, b.y + n.y}, {b.x - n.x, b.y - n.y}, c);
+            DrawTriangle({a.x + n.x, a.y + n.y}, {b.x - n.x, b.y - n.y}, {a.x - n.x, a.y - n.y}, c);
+        }
     }
 }
 
