@@ -187,7 +187,6 @@ skystriker/
 │   └── game/
 │       ├── Pose.hpp        战机姿态规范（滚转/俯仰，机库复用同一套）
 │       └── World.hpp/.cpp  战斗世界：1~2 名玩家 / 敌机 / 弹幕 / Boss / 波次 / HUD
-├── spec/ui-design.md       UI 架构设计稿
 ├── tools/                  开发期用的模型探针、字符集校验、联机回归测试
 ├── build.bat / run.bat
 ├── CMakeLists.txt
